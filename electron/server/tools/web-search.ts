@@ -35,7 +35,9 @@ function extractBingTargetUrl(rawUrl: string) {
       const normalized = encoded.startsWith("a1") ? encoded.slice(2) : encoded;
       return Buffer.from(normalized, "base64").toString("utf8");
     }
-  } catch { /* keep original */ }
+  } catch {
+    // Keep original URL when decoding fails.
+  }
   return rawUrl;
 }
 
@@ -166,7 +168,7 @@ async function searchAStockQuote(query: string) {
   const response = await fetch(`https://hq.sinajs.cn/list=${stock.symbol}`, {
     headers: {
       "User-Agent": "Mozilla/5.0",
-      "Referer": "https://finance.sina.com.cn",
+      Referer: "https://finance.sina.com.cn",
     },
   });
   if (!response.ok) throw new Error(`Sina quote failed: ${response.status}`);
@@ -191,7 +193,7 @@ async function searchAStockQuote(query: string) {
   const eastmoneyCode = stock.market === "sh" ? `1.${stock.code}` : `0.${stock.code}`;
 
   return [
-    `Source: Sina Finance quote`,
+    "Source: Sina Finance quote",
     `Stock: ${name} (${stock.code}.${stock.market.toUpperCase()})`,
     `Quote time: ${date} ${time}`,
     `Current: ${current.toFixed(3)}`,
@@ -201,10 +203,10 @@ async function searchAStockQuote(query: string) {
     `Turnover: ${amount.toLocaleString("zh-CN", { maximumFractionDigits: 2 })} CNY`,
     "",
     "Reference links:",
-    `1. 新浪财经行情 https://finance.sina.com.cn/realstock/company/${stock.symbol}/nc.shtml`,
-    `2. 东方财富行情 https://quote.eastmoney.com/${stock.market}${stock.code}.html`,
-    `3. 东方财富资金/资料 https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/Index?type=web&code=${eastmoneyCode}`,
-    `4. 巨潮资讯公告搜索 https://www.cninfo.com.cn/new/fulltextSearch?notautosubmit=&keyWord=${stock.code}`,
+    `1. Sina Finance https://finance.sina.com.cn/realstock/company/${stock.symbol}/nc.shtml`,
+    `2. Eastmoney Quote https://quote.eastmoney.com/${stock.market}${stock.code}.html`,
+    `3. Eastmoney Survey https://emweb.securities.eastmoney.com/PC_HSF10/CompanySurvey/Index?type=web&code=${eastmoneyCode}`,
+    `4. CNInfo Search https://www.cninfo.com.cn/new/fulltextSearch?notautosubmit=&keyWord=${stock.code}`,
   ].join("\n");
 }
 

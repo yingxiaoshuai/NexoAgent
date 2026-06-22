@@ -1,22 +1,27 @@
 import { ChatOpenAI } from "@langchain/openai";
-import { HumanMessage, SystemMessage, AIMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import type { AIMessageChunk } from "@langchain/core/messages";
 import type { AgentSettings, ChatMessage } from "../../src/shared/types";
-import { recallMemory, extractAndStore } from "../memory";
+import { extractAndStore, recallMemory } from "../memory";
 import { loadAttachmentContext } from "./attachments";
+import { circuitBreakerInfoFromDecision, createAgentLoopCircuitBreaker } from "./agent-loop-circuit-breaker";
 import { retrieveKnowledgeContext } from "./knowledge";
-import { getEnabledModelCapabilitySummary } from "./model-profiles";
+import { resolveAndPersistModelContextBudget, getEnabledModelCapabilitySummary } from "./model-profiles";
 import { callChatCompletion, resolvePrimaryModelConfig } from "./model-runtime";
 import { pushEvent } from "./sse";
 import { getWebSettings } from "./settings";
 import { getEnabledSkillInstructions } from "./skills";
-import type { ChatAttachment, StreamEvent, ToolExecutionContext } from "./types";
+import { computePromptBudget, estimateMessagesTokens, estimateSectionTokens, estimateTokens, trimSectionsToBudget, truncateTextToTokenBudget } from "./token-budget";
+import { getEnabledToolDefs, toLcTool } from "./tools/registry";
+import type { ChatAttachment, Session, StreamEvent, ToolDef, ToolExecutionContext } from "./types";
 import { decodeHtml, parseToolArgs, toErrorMessage } from "./utils";
 import { getAllowedFileRoots, getWorkspaceRoot, isPathInsideWorkspace, workspaceBoundaryError } from "./workspace";
-import { getEnabledToolDefs, toLcTool } from "./tools/registry";
-import type { ToolDef } from "./types";
 
 const FILE_TOOL_NAMES = new Set(["file_read", "file_write"]);
+const MISSING_PRIMARY_MODEL_MESSAGE = "\u672a\u914d\u7f6e\u4e3b\u6a21\u578b\u3002\u8bf7\u5230 Settings > Models \u65b0\u589e\u4e00\u4e2a\u6a21\u578b\uff0c\u586b\u5199 API Key\uff0c\u5e76\u5c06\u5176\u8bbe\u4e3a Primary\u3002";
+const MISSING_API_KEY_MESSAGE = "\u5f53\u524d\u4e3b\u6a21\u578b\u672a\u914d\u7f6e API Key\u3002\u8bf7\u5230 Settings > Models \u8865\u5145\u540e\u518d\u8bd5\u3002";
+const MAX_STEPS_FALLBACK_MESSAGE = "\n\n\u5df2\u8fbe\u5230\u5de5\u5177\u8c03\u7528\u6b65\u6570\u4e0a\u9650\u3002\u6211\u5df2\u6267\u884c\u5b8c\u524d\u9762\u7684\u5de5\u5177\u6b65\u9aa4\uff0c\u4f46\u8fd8\u6ca1\u62ff\u5230\u6a21\u578b\u7684\u6700\u7ec8\u603b\u7ed3\u3002\u8bf7\u7ee7\u7eed\u53d1\u9001\u201c\u7ee7\u7eed\u201d\uff0c\u6211\u4f1a\u57fa\u4e8e\u5df2\u6709\u7ed3\u679c\u63a5\u7740\u5904\u7406\u3002";
+const EMPTY_RESPONSE_FALLBACK_MESSAGE = "\u6211\u6ca1\u6709\u751f\u6210\u6709\u6548\u56de\u590d\u3002\u8bf7\u518d\u53d1\u4e00\u6b21\uff0c\u6216\u68c0\u67e5\u6a21\u578b\u914d\u7f6e\u540e\u91cd\u8bd5\u3002";
 
 function formatCapabilitySummary(summary: Awaited<ReturnType<typeof getEnabledModelCapabilitySummary>>) {
   const lines = Object.entries(summary)
@@ -37,7 +42,7 @@ function withSettingsAwareToolDefs(tools: ToolDef[], settings: AgentSettings): T
             tool.description,
             `Configured default timeout: ${timeoutSec}s (${settings.shellCommandTimeoutMs ?? 300_000}ms).`,
             "Omit timeoutMs to use that default.",
-            "Never run vite/webpack/npm run dev via shell_command — use build or ask the user to start the dev server.",
+            "Never run vite/webpack/npm run dev via shell_command. Use build or ask the user to start the dev server.",
           ].join(" "),
         };
       }
@@ -48,7 +53,7 @@ function withSettingsAwareToolDefs(tools: ToolDef[], settings: AgentSettings): T
       description: [
         tool.description,
         `Current allowed roots: ${roots}.`,
-        "If the target path is outside these roots, do NOT call this tool — it will always fail and waste a tool step.",
+        "If the target path is outside these roots, do not call this tool because it will always fail.",
         "Use shell_command for paths outside allowed roots.",
       ].join(" "),
     };
@@ -69,13 +74,13 @@ function summarizeTerminalToolOutput(name: string, output: string) {
     const match = firstLine.match(/^Installed skill:\s*(.+?)\s*\((.+?)\)$/i);
     if (!match) return "";
     const marketplace = cleaned.match(/^Marketplace:\s*(.+)$/im)?.[1]?.trim();
-    return `已安装：${match[1]}（${match[2]}）${marketplace ? `，来源：${marketplace}` : ""}。`;
+    return `Installed: ${match[1]} (${match[2]})${marketplace ? `, source: ${marketplace}` : ""}.`;
   }
 
   if (name === "create_skill") {
     const match = firstLine.match(/^Saved skill:\s*(.+?)\s*\((.+?)\)$/i);
     if (!match) return "";
-    return `已创建：${match[1]}（${match[2]}）。`;
+    return `Created: ${match[1]} (${match[2]}).`;
   }
 
   return "";
@@ -89,7 +94,7 @@ type BufferedToolCall = {
   index?: number;
 };
 
-const DSML_TAG = String.raw`(?:｜｜DSML｜｜|\|\|DSML\|\|)`;
+const DSML_TAG = String.raw`(?:锝滐綔DSML锝滐綔|\|\|DSML\|\|)`;
 const DSML_TOOL_BLOCK_RE = new RegExp(String.raw`<\s*${DSML_TAG}tool_calls\s*>([\s\S]*?)<\/\s*${DSML_TAG}tool_calls\s*>`, "g");
 const DSML_TOOL_START_RE = new RegExp(String.raw`<\s*${DSML_TAG}tool_calls\s*>`);
 const DSML_INVOKE_RE = new RegExp(String.raw`<\s*${DSML_TAG}invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/\s*${DSML_TAG}invoke\s*>`, "g");
@@ -206,28 +211,80 @@ async function compactOlderMessages(messages: ChatMessage[], summarize: (transcr
   }
 }
 
-async function buildConversationContextMessages(
+function formatAuxiliarySection(title: string, content: string) {
+  if (!content.trim()) return "";
+  return `${title}:\n${content.trim()}`;
+}
+
+async function buildBudgetAwareConversationContext(
   settings: AgentSettings,
-  messages: ChatMessage[],
-  summarize: (transcript: string) => Promise<string>
+  session: Session,
+  summarize: (transcript: string) => Promise<string>,
+  baseSections: Array<{ key: string; label: string; content: string }>,
+  budgetConfig: ReturnType<typeof computePromptBudget>
 ) {
-  const conversationMessages = messages.filter((message) => message.role !== "system");
+  const conversationMessages = session.messages.filter((message) => message.role !== "system");
   const recentWindow = normalizePositiveInteger(settings.maxContextTurns, 12);
-  const threshold = Math.max(
-    recentWindow + 1,
-    normalizePositiveInteger(settings.contextCompactionThreshold, 24, 6)
-  );
-  const shouldCompact = Boolean(settings.enableContextCompaction) && conversationMessages.length > threshold;
-  const recentMessages = shouldCompact
-    ? conversationMessages.slice(-recentWindow)
-    : conversationMessages.slice(-(settings.enableContextCompaction ? threshold : recentWindow));
-  const olderMessages = shouldCompact
-    ? conversationMessages.slice(0, -recentWindow)
-    : [];
-  const compactedSummary = shouldCompact ? await compactOlderMessages(olderMessages, summarize) : "";
+  let recentMessages = conversationMessages.slice(-recentWindow);
+  let olderMessages = conversationMessages.slice(0, Math.max(0, conversationMessages.length - recentMessages.length));
+  let threadSummary = session.threadSummary?.trim() ?? "";
+  let compacted = false;
+  let passes = 0;
+
+  const estimateBase = () => baseSections.reduce((sum, section) => sum + estimateSectionTokens(section.label, section.content), 0);
+  const estimateSummary = () => estimateSectionTokens("Earlier conversation summary", threadSummary);
+  const estimateRecent = () => estimateMessagesTokens(recentMessages);
+  const estimateTotal = () => estimateBase() + estimateSummary() + estimateRecent();
+
+  while (
+    settings.enableContextCompaction
+    && (estimateTotal() >= budgetConfig.autoCompactTokenLimit || (passes === 0 && olderMessages.length > 0 && conversationMessages.length > Math.max(recentWindow + 1, settings.contextCompactionThreshold)))
+    && passes < 4
+  ) {
+    const summaryInput = olderMessages.length > 0
+      ? olderMessages
+      : recentMessages.slice(0, Math.max(0, recentMessages.length - Math.max(2, Math.floor(recentWindow / 2))));
+    if (!summaryInput.length) break;
+
+    const nextSummary = await compactOlderMessages(summaryInput, summarize);
+    threadSummary = [threadSummary, nextSummary].filter(Boolean).join("\n\n");
+    compacted = true;
+    passes += 1;
+
+    if (olderMessages.length > 0) {
+      olderMessages = [];
+    } else {
+      recentMessages = recentMessages.slice(-Math.max(2, Math.floor(recentWindow / 2)));
+    }
+
+    while (estimateTotal() > budgetConfig.compactionTargetTokens && recentMessages.length > 2) {
+      const shifted = recentMessages.shift();
+      if (!shifted) break;
+      const fragment = await compactOlderMessages([shifted], summarize);
+      threadSummary = [threadSummary, fragment].filter(Boolean).join("\n\n");
+      compacted = true;
+    }
+
+    if (estimateTokens(threadSummary) > Math.max(512, Math.floor(budgetConfig.maxInputTokens * 0.35))) {
+      threadSummary = truncateTextToTokenBudget(threadSummary, Math.max(512, Math.floor(budgetConfig.maxInputTokens * 0.3)));
+    }
+  }
+
+  if (threadSummary && estimateTotal() > budgetConfig.maxInputTokens) {
+    threadSummary = truncateTextToTokenBudget(threadSummary, Math.max(384, Math.floor(budgetConfig.compactionTargetTokens * 0.35)));
+  }
+
+  session.threadSummary = threadSummary || undefined;
+  if (threadSummary) {
+    session.threadSummaryUpdatedAt = new Date().toISOString();
+    session.threadSummaryVersion = (session.threadSummaryVersion ?? 0) + (compacted ? 1 : 0);
+  }
 
   return {
-    compactedSummary,
+    compactedSummary: threadSummary,
+    estimatedPromptTokens: estimateTotal(),
+    compacted,
+    recentRawMessages: recentMessages,
     messages: recentMessages.map((message) =>
       message.role === "user" ? new HumanMessage(message.content) : new AIMessage(message.content)
     ),
@@ -236,11 +293,12 @@ async function buildConversationContextMessages(
 
 export async function streamFromLLM(
   settings: AgentSettings,
-  messages: ChatMessage[],
+  session: Session,
   requestId: string,
   storedApiKey: string,
   attachments: ChatAttachment[] = []
 ): Promise<Extract<StreamEvent, { type: "done" }> | null> {
+  const messages = session.messages;
   const webSettings = getWebSettings();
   const fallbackApiKey = settings.apiKey || storedApiKey || webSettings.apiKey || "";
   const fallbackApiBase = (settings.apiBase || webSettings.apiBase || "https://api.openai.com/v1").replace(/\/+$/, "");
@@ -251,32 +309,51 @@ export async function streamFromLLM(
   );
   const effectiveApiKey = primaryConfig.apiKey || fallbackApiKey;
 
+  if (!primaryConfig.model.trim()) {
+    throw new Error(MISSING_PRIMARY_MODEL_MESSAGE);
+  }
+
   if (!effectiveApiKey) {
-    const demo =
-      "已收到您的请求。当前未配置 API 密钥，这是演示响应。\n\n请前往**设置**页面配置模型 API 密钥后使用完整功能。";
-    for (const char of demo) {
-      pushEvent(requestId, { type: "token", content: char });
-      await new Promise((r) => setTimeout(r, 12));
-    }
-    const doneEvent: Extract<StreamEvent, { type: "done" }> = { type: "done", content: demo };
-    pushEvent(requestId, doneEvent);
-    return doneEvent;
+    throw new Error(primaryConfig.name === "default" ? MISSING_PRIMARY_MODEL_MESSAGE : MISSING_API_KEY_MESSAGE);
   }
 
   const apiBase = primaryConfig.apiBase;
   const model = primaryConfig.model;
   const capabilitySummary = await getEnabledModelCapabilitySummary();
   const skillInstructions = await getEnabledSkillInstructions();
+  const enabledToolDefs = withSettingsAwareToolDefs(getEnabledToolDefs(), settings);
+  const resolvedBudget = await resolveAndPersistModelContextBudget({
+    providerId: primaryConfig.providerId,
+    model: primaryConfig.model,
+    contextWindowTokens: primaryConfig.contextWindowTokens,
+    reservedOutputTokens: primaryConfig.reservedOutputTokens,
+    autoCompactTokenLimit: primaryConfig.autoCompactTokenLimit,
+    compactionTargetRatio: primaryConfig.compactionTargetRatio,
+    contextWindowSource: primaryConfig.contextWindowSource as AgentSettings["contextWindowSource"],
+    contextWindowSourceDetail: primaryConfig.contextWindowSourceDetail,
+    contextWindowResolvedAt: primaryConfig.contextWindowResolvedAt,
+  });
+  const budgetConfig = computePromptBudget(settings, resolvedBudget, Math.max(512, enabledToolDefs.length * 180));
 
   const lastUserMsg = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
   let memoryContext = "";
   if (settings.enableMemory) {
     memoryContext = await recallMemory(lastUserMsg, effectiveApiKey, apiBase);
   }
-  const knowledgeContext = settings.enableKnowledge
-    ? await retrieveKnowledgeContext(lastUserMsg)
-    : "";
+  const knowledgeContext = settings.enableKnowledge ? await retrieveKnowledgeContext(lastUserMsg) : "";
   const attachmentContext = await loadAttachmentContext(attachments);
+
+  const trimmedAuxiliarySections = trimSectionsToBudget([
+    { key: "skills", label: "Enabled skills", content: skillInstructions || "", minTokens: 128 },
+    { key: "memory", label: "Relevant memories about the user", content: memoryContext || "", minTokens: 160 },
+    { key: "knowledge", label: "Relevant knowledge base notes", content: knowledgeContext || "", minTokens: 160 },
+    { key: "attachments", label: "Current user attachments", content: attachmentContext || "", minTokens: 128 },
+  ], Math.max(512, Math.floor(budgetConfig.maxInputTokens * 0.28)));
+
+  const auxiliaryPrompt = trimmedAuxiliarySections
+    .map((section) => formatAuxiliarySection(section.label, section.content))
+    .filter(Boolean)
+    .join("\n\n");
 
   const systemPrompt = [
     "You are Nexo Agent, a helpful AI assistant.",
@@ -285,14 +362,15 @@ export async function streamFromLLM(
     `Workspace root for file tools: ${getWorkspaceRoot(settings)}.`,
     `Allowed file roots: ${getAllowedFileRoots(settings).join("; ")}.`,
     "Tool budget matters: never call file_read or file_write unless you have verified the path is inside allowed roots.",
-    "If a path is outside allowed roots, do NOT call file_read/file_write — use shell_command or ask the user to update Settings first.",
+    "If a path is outside allowed roots, do NOT call file_read/file_write. Use shell_command or ask the user to update Settings first.",
     "After one file-tool boundary failure, do not call file_read/file_write again in the same reply.",
     "Use tools when they are helpful. For web_search or http_request, cite useful result links in your answer when available.",
     "Never write DSML/XML-like tool call tags in the user-visible response. Use the provided tool-calling interface only.",
     "Use shell_command for terminal tasks and for listing or inspecting paths outside the workspace.",
     "For shell_command: omit timeoutMs to use the configured default script timeout (Settings). Do not pass timeoutMs: 6000 or other short values for npm install, build, or dev commands.",
-    "Never use shell_command to start vite, webpack, or npm run dev — those processes do not exit and will block until timeout.",
+    "Never use shell_command to start vite, webpack, or npm run dev because those processes do not exit and will block until timeout.",
     `Primary model: ${primaryConfig.name} / ${primaryConfig.model}.`,
+    `Resolved context budget: window=${budgetConfig.contextWindowTokens}, input=${budgetConfig.maxInputTokens}, compact=${budgetConfig.autoCompactTokenLimit}, source=${resolvedBudget.contextWindowSource ?? "default"}.`,
     "You are the orchestrator. Route specialist work by capability instead of asking the user for a model name.",
     "Use analyze_image for image recognition or visual question answering.",
     "Use generate_image for text-to-image requests and edit_image when the user wants to modify an existing image.",
@@ -302,16 +380,13 @@ export async function streamFromLLM(
     "For file_write, only write files when the user explicitly asks you to create or modify files.",
     "When the user wants to create, search, or install a skill, prefer the dedicated search_skills, install_skill, and create_skill tools instead of sending them to the Skills page UI.",
     "When the user asks to find a skill, treat internet skill marketplaces as the default search surface unless they explicitly ask for local-only skills.",
-    ...(skillInstructions ? [`\nEnabled skills:\n${skillInstructions}`] : []),
-    ...(memoryContext ? [`\nRelevant memories about the user:\n${memoryContext}`] : []),
-    ...(knowledgeContext ? [`\nRelevant knowledge base notes:\n${knowledgeContext}`] : []),
-    ...(attachmentContext ? [`\nCurrent user attachments:\n${attachmentContext}`] : []),
+    ...(auxiliaryPrompt ? [auxiliaryPrompt] : []),
   ].join("\n");
 
   const summarizeOlderContext = async (transcript: string) => {
     const summaryInstruction = [
       "Summarize the earlier conversation so a new model call can continue with less context.",
-      "Preserve user preferences, project constraints, decisions already made, pending tasks, file paths, commands/results, errors, and any commitments.",
+      "Preserve user preferences, project constraints, decisions already made, pending tasks, file paths, commands, tool results, errors, attempts, and unfinished work.",
       "Do not invent details. Keep the summary concise but operational.",
     ].join("\n");
 
@@ -336,7 +411,16 @@ export async function streamFromLLM(
     return typeof response.content === "string" ? response.content.trim() : JSON.stringify(response.content);
   };
 
-  const conversationContext = await buildConversationContextMessages(settings, messages, summarizeOlderContext);
+  const conversationContext = await buildBudgetAwareConversationContext(
+    settings,
+    session,
+    summarizeOlderContext,
+    [
+      { key: "system", label: "System prompt", content: systemPrompt },
+      ...trimmedAuxiliarySections.map((section) => ({ key: section.key, label: section.label, content: section.content })),
+    ],
+    budgetConfig
+  );
 
   const lcMessages = [
     new SystemMessage(systemPrompt),
@@ -353,14 +437,11 @@ export async function streamFromLLM(
         ...(conversationContext.compactedSummary
           ? [{ role: "system" as const, content: `Earlier conversation summary from automatic context compaction:\n${conversationContext.compactedSummary}` }]
           : []),
-        ...messages
-          .filter((message) => message.role !== "system")
-          .slice(-(settings.maxContextTurns ?? 12))
-          .map((message) => ({
-            role: message.role === "assistant" ? "assistant" as const : "user" as const,
-            content: message.content,
-          })),
-      ], { temperature: primaryConfig.temperature ?? settings.temperature ?? 0.4, maxTokens: 2048 });
+        ...conversationContext.recentRawMessages.map((message) => ({
+          role: message.role === "assistant" ? "assistant" as const : "user" as const,
+          content: message.content,
+        })),
+      ], { temperature: primaryConfig.temperature ?? settings.temperature ?? 0.4, maxTokens: resolvedBudget.reservedOutputTokens ?? 2048 });
       for (const char of result.content) {
         pushEvent(requestId, { type: "token", content: char });
       }
@@ -370,6 +451,13 @@ export async function streamFromLLM(
         usage: {
           promptTokens: result.usage?.prompt_tokens,
           completionTokens: result.usage?.completion_tokens,
+        },
+        contextBudget: {
+          contextWindowTokens: budgetConfig.contextWindowTokens,
+          maxInputTokens: budgetConfig.maxInputTokens,
+          autoCompactTokenLimit: budgetConfig.autoCompactTokenLimit,
+          estimatedPromptTokens: conversationContext.estimatedPromptTokens,
+          source: resolvedBudget.contextWindowSource,
         },
       };
       pushEvent(requestId, doneEvent);
@@ -388,11 +476,8 @@ export async function streamFromLLM(
     streaming: true,
   });
 
-  const enabledToolDefs = withSettingsAwareToolDefs(getEnabledToolDefs(), settings);
   const enabledToolMap = new Map(enabledToolDefs.map((tool) => [tool.name, tool]));
-  const llmRunner = enabledToolDefs.length > 0
-    ? llm.bindTools(enabledToolDefs.map(toLcTool))
-    : llm;
+  const llmRunner = enabledToolDefs.length > 0 ? llm.bindTools(enabledToolDefs.map(toLcTool)) : llm;
   const toolCtx: ToolExecutionContext = {
     settings,
     apiKey: effectiveApiKey,
@@ -406,6 +491,8 @@ export async function streamFromLLM(
   const maxSteps = settings.maxSteps ?? 20;
   let reachedToolStepLimit = false;
   let fileToolsBlocked = false;
+  let breakerInfo: ReturnType<typeof circuitBreakerInfoFromDecision> | undefined;
+  const circuitBreaker = settings.circuitBreakerEnabled ? createAgentLoopCircuitBreaker(settings) : null;
 
   try {
     for (let step = 0; step < maxSteps; step++) {
@@ -458,6 +545,13 @@ export async function streamFromLLM(
       }
       toolCallBuffer.push(...parsedDsml.calls);
 
+      circuitBreaker?.recordModelTurn({
+        step: step + 1,
+        visibleText: turnContent,
+        toolCalls: toolCallBuffer.map((tc) => ({ name: tc.name, args: parseToolArgs(tc.args) })),
+        usage: { promptTokens, completionTokens },
+      });
+
       if (toolCallBuffer.length === 0) break;
 
       const aiMsg = new AIMessage({
@@ -473,7 +567,6 @@ export async function streamFromLLM(
 
       for (const tc of toolCallBuffer) {
         const parsedArgs = parseToolArgs(tc.args);
-
         pushEvent(requestId, { type: "tool_call", id: tc.id, name: tc.name, input: parsedArgs });
 
         const toolFn = enabledToolMap.get(tc.name);
@@ -514,7 +607,16 @@ export async function streamFromLLM(
         const elapsed = (Date.now() - t0) / 1000;
 
         pushEvent(requestId, { type: "tool_result", id: tc.id, output: String(output), elapsed });
-        lcMessages.push(new ToolMessage({ content: String(output), tool_call_id: tc.id }));
+        circuitBreaker?.recordToolResult({
+          name: tc.name,
+          args: parsedArgs,
+          output: String(output),
+          elapsedSeconds: elapsed,
+        });
+        lcMessages.push(new ToolMessage({
+          content: truncateTextToTokenBudget(String(output), Math.max(128, Math.floor(budgetConfig.maxInputTokens * 0.08))),
+          tool_call_id: tc.id,
+        }));
 
         const summary = summarizeTerminalToolOutput(tc.name, String(output));
         if (summary) {
@@ -529,16 +631,25 @@ export async function streamFromLLM(
         break;
       }
 
+      const decision = circuitBreaker?.evaluate();
+      if (decision?.action === "stop") {
+        breakerInfo = circuitBreakerInfoFromDecision(decision);
+        reachedToolStepLimit = false;
+        break;
+      }
+
       if (step === maxSteps - 1) {
         reachedToolStepLimit = true;
       }
     }
 
-    if (reachedToolStepLimit) {
+    if (reachedToolStepLimit || breakerInfo) {
       const finalStream = await llm.stream([
         ...lcMessages,
         new SystemMessage(
-          "The tool step limit has been reached. Do not call tools. Based on the available tool results, give the user a concise final response in their language. If work is incomplete, say exactly what remains."
+          breakerInfo
+            ? `The run was stopped by the circuit breaker (${breakerInfo.reason}: ${breakerInfo.detail}). Do not call tools. Based on the available tool results, give the user a concise final response in their language. If work is incomplete, say exactly what remains.`
+            : "The tool step limit has been reached. Do not call tools. Based on the available tool results, give the user a concise final response in their language. If work is incomplete, say exactly what remains."
         ),
       ]);
       let finalContent = "";
@@ -560,20 +671,31 @@ export async function streamFromLLM(
         pushEvent(requestId, { type: "token", content: finalContent });
       }
       if (!finalContent.trim()) {
-        const fallback = "\n\n已达到工具调用步数上限。我已经执行了上面的工具步骤，但还没有拿到模型的最终总结。请继续发送“继续”，我会基于已有结果接着处理。";
-        fullContent += fallback;
-        pushEvent(requestId, { type: "token", content: fallback });
+        fullContent += MAX_STEPS_FALLBACK_MESSAGE;
+        pushEvent(requestId, { type: "token", content: MAX_STEPS_FALLBACK_MESSAGE });
       }
     }
-  } catch (e) {
-    pushEvent(requestId, { type: "error", message: String(e) });
+  } catch (error) {
+    pushEvent(requestId, { type: "error", message: toErrorMessage(error) });
     return null;
   }
 
   const doneEvent: Extract<StreamEvent, { type: "done" }> = {
     type: "done",
-    content: fullContent || "我没有生成有效回复。请再发一次，或降低工具步数/切换模型后重试。",
+    content: fullContent || EMPTY_RESPONSE_FALLBACK_MESSAGE,
     usage: { promptTokens, completionTokens },
+    ...(breakerInfo
+      ? { stopReason: "circuit_breaker" as const, circuitBreaker: breakerInfo }
+      : reachedToolStepLimit
+        ? { stopReason: "max_steps" as const }
+        : {}),
+    contextBudget: {
+      contextWindowTokens: budgetConfig.contextWindowTokens,
+      maxInputTokens: budgetConfig.maxInputTokens,
+      autoCompactTokenLimit: budgetConfig.autoCompactTokenLimit,
+      estimatedPromptTokens: conversationContext.estimatedPromptTokens,
+      source: resolvedBudget.contextWindowSource,
+    },
   };
   pushEvent(requestId, doneEvent);
   return doneEvent;
@@ -595,6 +717,12 @@ export async function extractMemoryAfterChat(
     fallbackApiKey
   );
 
+  const durableMemoryInstruction = [
+    "Extract only durable memory candidates.",
+    "Prefer stable preferences, recurring workflows, project conventions, and long-lived facts.",
+    "Exclude temporary debugging details, one-off command output, transient file paths, and task-local dead ends.",
+  ].join("\n");
+
   await extractAndStore(
     userMessage,
     assistantContent,
@@ -604,6 +732,7 @@ export async function extractMemoryAfterChat(
     async (prompt) => {
       if (primaryConfig.providerId === "anthropic-compatible") {
         const res = await callChatCompletion(primaryConfig, [
+          { role: "system", content: durableMemoryInstruction },
           { role: "user", content: prompt },
         ], { temperature: 0, maxTokens: 800 });
         return res.content;
@@ -615,7 +744,10 @@ export async function extractMemoryAfterChat(
         temperature: 0,
         configuration: { baseURL: primaryConfig.apiBase },
       });
-      const res = await llm.invoke([new HumanMessage(prompt)]);
+      const res = await llm.invoke([
+        new SystemMessage(durableMemoryInstruction),
+        new HumanMessage(prompt),
+      ]);
       return typeof res.content === "string" ? res.content : "";
     },
     { model: primaryConfig.model }

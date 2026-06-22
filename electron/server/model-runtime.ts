@@ -1,8 +1,11 @@
 import type { AgentSettings, ChatMessage, ModelCapability, ProviderId } from "../../src/shared/types";
 import { isModelCapability } from "../../src/shared/types";
 import { findStoredModelProfile, findStoredModelProfileByCapability, getPrimaryModelProfile } from "./model-profiles";
+import { resolveStoredModelContextBudget } from "./model-context";
 import type { ToolExecutionContext } from "./types";
 import { getOptionalStringArg, getStringArg } from "./utils";
+
+const MISSING_PRIMARY_MODEL_MESSAGE = "\u672a\u914d\u7f6e\u4e3b\u6a21\u578b\u3002\u8bf7\u5230 Settings > Models \u65b0\u589e\u4e00\u4e2a\u6a21\u578b\uff0c\u586b\u5199 API Key\uff0c\u5e76\u5c06\u5176\u8bbe\u4e3a Primary\u3002";
 
 export interface ModelRuntimeConfig {
   name: string;
@@ -11,6 +14,13 @@ export interface ModelRuntimeConfig {
   apiKey: string;
   model: string;
   temperature: number;
+  contextWindowTokens?: number;
+  reservedOutputTokens?: number;
+  autoCompactTokenLimit?: number;
+  compactionTargetRatio?: number;
+  contextWindowSource?: string;
+  contextWindowSourceDetail?: string;
+  contextWindowResolvedAt?: string;
 }
 
 export interface ChatContentTextPart {
@@ -72,7 +82,8 @@ function toRuntimeConfig(
   apiBase: string,
   apiKey: string,
   model: string,
-  temperature: number
+  temperature: number,
+  contextBudget: Partial<ModelRuntimeConfig> = {}
 ): ModelRuntimeConfig {
   return {
     name,
@@ -81,16 +92,29 @@ function toRuntimeConfig(
     apiKey: apiKey.trim(),
     model: model.trim(),
     temperature,
+    contextWindowTokens: contextBudget.contextWindowTokens,
+    reservedOutputTokens: contextBudget.reservedOutputTokens,
+    autoCompactTokenLimit: contextBudget.autoCompactTokenLimit,
+    compactionTargetRatio: contextBudget.compactionTargetRatio,
+    contextWindowSource: contextBudget.contextWindowSource,
+    contextWindowSourceDetail: contextBudget.contextWindowSourceDetail,
+    contextWindowResolvedAt: contextBudget.contextWindowResolvedAt,
   };
 }
 
 export async function resolvePrimaryModelConfig(settings: AgentSettings, storedApiKey = ""): Promise<ModelRuntimeConfig> {
   const primary = await getPrimaryModelProfile();
   if (primary) {
-    return toRuntimeConfig(primary.name, primary.providerId, primary.apiBase, primary.apiKey, primary.model, primary.temperature ?? settings.temperature);
+    const budget = await resolveStoredModelContextBudget({ profile: primary, settings });
+    return toRuntimeConfig(primary.name, primary.providerId, primary.apiBase, primary.apiKey, primary.model, primary.temperature ?? settings.temperature, budget);
   }
   const apiKey = settings.apiKey || storedApiKey || "";
-  return toRuntimeConfig("default", settings.providerId, settings.apiBase, apiKey, settings.model, settings.temperature);
+  const model = settings.model?.trim() || "";
+  if (!model) {
+    throw new Error(MISSING_PRIMARY_MODEL_MESSAGE);
+  }
+  const budget = await resolveStoredModelContextBudget({ settings });
+  return toRuntimeConfig("default", settings.providerId, settings.apiBase, apiKey, model, settings.temperature, budget);
 }
 
 export async function resolveModelConfigFromArgs(
@@ -110,14 +134,16 @@ export async function resolveModelConfigFromArgs(
     if (!profile) {
       throw new Error(`Unknown model profile: ${profileQuery}`);
     }
-    return toRuntimeConfig(profile.name, profile.providerId, profile.apiBase, profile.apiKey, profile.model, profile.temperature ?? ctx.settings.temperature);
+    const budget = await resolveStoredModelContextBudget({ profile, settings: ctx.settings });
+    return toRuntimeConfig(profile.name, profile.providerId, profile.apiBase, profile.apiKey, profile.model, profile.temperature ?? ctx.settings.temperature, budget);
   }
 
   if (capability) {
     const profile = await findStoredModelProfileByCapability(capability)
       ?? (capability === "chat" ? await findStoredModelProfileByCapability("orchestration") : null);
     if (profile) {
-      return toRuntimeConfig(profile.name, profile.providerId, profile.apiBase, profile.apiKey, profile.model, profile.temperature ?? ctx.settings.temperature);
+      const budget = await resolveStoredModelContextBudget({ profile, settings: ctx.settings });
+      return toRuntimeConfig(profile.name, profile.providerId, profile.apiBase, profile.apiKey, profile.model, profile.temperature ?? ctx.settings.temperature, budget);
     }
     if (options.allowDefault === false) {
       throw new Error(`No enabled model profile is configured for capability "${capability}". Configure a specialist model in Settings > Models.`);
@@ -125,7 +151,8 @@ export async function resolveModelConfigFromArgs(
   }
 
   if (!profileQuery || profileQuery === "default" || options.allowDefault !== false) {
-    return toRuntimeConfig("default", ctx.settings.providerId, ctx.apiBase, ctx.apiKey, ctx.settings.model, ctx.settings.temperature);
+    const budget = await resolveStoredModelContextBudget({ settings: ctx.settings });
+    return toRuntimeConfig("default", ctx.settings.providerId, ctx.apiBase, ctx.apiKey, ctx.settings.model, ctx.settings.temperature, budget);
   }
 
   throw new Error(`Unable to resolve model profile: ${profileQuery}`);

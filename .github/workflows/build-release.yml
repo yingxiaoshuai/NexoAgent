@@ -1,0 +1,153 @@
+name: Build And Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+  package:
+    name: Package ${{ matrix.label }}
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            label: Windows
+            runner: windows-latest
+            package_script: package:win
+            artifact_name: nexo-agent-windows-package
+          - platform: macos
+            label: macOS
+            runner: macos-latest
+            package_script: package:mac
+            artifact_name: nexo-agent-macos-package
+          - platform: linux
+            label: Linux
+            runner: ubuntu-latest
+            package_script: package:linux
+            artifact_name: nexo-agent-linux-package
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build package
+        run: npm run ${{ matrix.package_script }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Collect packaged artifacts
+        shell: pwsh
+        run: |
+          $artifactDir = Join-Path $PWD "ci-artifacts"
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+
+          $files = switch ("${{ matrix.platform }}") {
+            "windows" {
+              Get-ChildItem release -File | Where-Object {
+                $_.Name -match '\.exe$' -or
+                $_.Name -match '\.exe\.blockmap$' -or
+                $_.Name -match '\.zip$' -or
+                $_.Name -match '^latest.*\.yml$'
+              }
+            }
+            "macos" {
+              Get-ChildItem release -File | Where-Object {
+                $_.Name -match '\.dmg$' -or
+                $_.Name -match '\.dmg\.blockmap$' -or
+                $_.Name -match '-mac\.zip$' -or
+                $_.Name -eq 'latest-mac.yml'
+              }
+            }
+            "linux" {
+              Get-ChildItem release -File | Where-Object {
+                $_.Name -match '\.AppImage$' -or
+                $_.Name -match '\.AppImage\.blockmap$' -or
+                $_.Name -match '\.tar\.gz$' -or
+                $_.Name -eq 'latest-linux.yml'
+              }
+            }
+            default {
+              @()
+            }
+          }
+
+          if (-not $files -or $files.Count -eq 0) {
+            throw "No packaged artifacts were found for platform ${{ matrix.platform }}."
+          }
+
+          foreach ($file in $files) {
+            Copy-Item $file.FullName -Destination (Join-Path $artifactDir $file.Name) -Force
+          }
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ci-artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nexo-agent-*-package
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

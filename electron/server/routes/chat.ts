@@ -3,13 +3,14 @@ import { randomUUID } from "node:crypto";
 import type { AgentSettings } from "../../../src/shared/types";
 import { extractMemoryAfterChat, streamFromLLM } from "../agent";
 import { buildRuntimeSettings } from "../settings";
-import { saveSessionsToDisk, getSessionsMap } from "../sessions";
+import { ensureSessionsLoaded, saveSessionsToDisk, getSessionsMap } from "../sessions";
 import { createSseQueue, pushEvent, scheduleSseCleanup } from "../sse";
 import type { ChatAttachment } from "../types";
 import type { ServerContext } from "./context";
 
 export function registerChatRoutes(app: Application, ctx: ServerContext) {
-  app.post("/api/chat", (req, res) => {
+  app.post("/api/chat", async (req, res) => {
+    await ensureSessionsLoaded();
     const { sessionId, message, settings, attachments } = req.body as {
       sessionId: string;
       message: string;
@@ -21,7 +22,7 @@ export function registerChatRoutes(app: Application, ctx: ServerContext) {
     let s = getSessionsMap().get(sessionId);
     if (!s) {
       const now = new Date().toISOString();
-      s = { id: sessionId, title: "新对话", messages: [], createdAt: now, updatedAt: now };
+      s = { id: sessionId, title: "New Chat", messages: [], createdAt: now, updatedAt: now };
       getSessionsMap().set(sessionId, s);
     }
 
@@ -35,7 +36,7 @@ export function registerChatRoutes(app: Application, ctx: ServerContext) {
     };
     s.messages.push(userMsg);
     if (s.messages.filter((m) => m.role === "user").length === 1) {
-      s.title = message.slice(0, 40) + (message.length > 40 ? "…" : "");
+      s.title = message.slice(0, 40) + (message.length > 40 ? "..." : "");
     }
 
     const requestId = randomUUID();
@@ -44,7 +45,7 @@ export function registerChatRoutes(app: Application, ctx: ServerContext) {
 
     const runtimeSettings = buildRuntimeSettings(settings ?? {});
 
-    void streamFromLLM(runtimeSettings, [...s.messages], requestId, ctx.getStoredApiKey(), messageAttachments)
+    void streamFromLLM(runtimeSettings, sessionRef, requestId, ctx.getStoredApiKey(), messageAttachments)
       .then(async (doneEvent) => {
         if (doneEvent) {
           sessionRef.messages.push({
@@ -63,7 +64,7 @@ export function registerChatRoutes(app: Application, ctx: ServerContext) {
         }
       })
       .catch((error) => {
-        pushEvent(requestId, { type: "error", message: String(error) });
+        pushEvent(requestId, { type: "error", message: error instanceof Error ? error.message : String(error) });
       })
       .finally(() => {
         scheduleSseCleanup(requestId);

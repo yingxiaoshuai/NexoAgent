@@ -9,7 +9,7 @@ The project is built with Electron, React, TypeScript, Ant Design, Express, and 
 ## Features
 
 - Multi-session chat: create, switch, rename, delete, persist, and stream conversations.
-- OpenAI-compatible models: configure API Base URL, API Key, model, temperature, planning mode, context turns, and max tool steps.
+- OpenAI-compatible models: configure API Base URL, API Key, model, temperature, planning mode, context turns, max tool steps, and optional context-budget overrides.
 - Tool calling: use LangChain tool calling for search, HTTP requests, model sub-calls, calculation, file read/write, memory recall, skill search/install, and shell commands.
 - Local memory: store `daily`, `dream`, `long_term`, and `script` memories in SQLite, with semantic recall when embeddings are available.
 - Dream memory: consolidate daily memories into reusable dream records for cross-session context.
@@ -17,6 +17,7 @@ The project is built with Electron, React, TypeScript, Ant Design, Express, and 
 - Skills: load built-in, workspace, managed, and marketplace-installed skills into the Agent prompt.
 - Scheduled tasks: run 5-field Cron prompt tasks on a schedule or manually, then save the result as a task session.
 - Attachments and logs: inline text attachments into context and inspect runtime logs from the Logs panel.
+- Token-aware context management: resolve model context windows from profile overrides, a local dictionary, provider metadata, or persisted first-use lookup results; automatically compact long threads into a rolling session summary before the prompt overruns the active model budget.
 - Desktop and web surfaces: the Electron app starts a local web console; the web console can also be built and served independently.
 
 ## Quick Start
@@ -81,6 +82,7 @@ After first launch, open Settings and configure the model runtime:
 | Extra File Access Roots | Additional absolute paths allowed for `file_read` and `file_write` |
 | Temperature | Model output randomness |
 | Max Context Turns | Recent conversation turns included in model requests |
+| Context Window / Reserved Output | Optional advanced overrides for model-specific context budgeting |
 | Max Tool Steps | Maximum tool-call steps in one assistant response |
 | Shell Command Timeout | Default timeout for `shell_command` |
 | Planning Mode | Fast, Balanced, or Deep |
@@ -108,6 +110,15 @@ Packaged artifacts are written to:
 ```text
 release/
 ```
+
+## GitHub Actions Packaging
+
+The repository includes a GitHub Actions workflow at `.github/workflows/build-release.yml`.
+
+- Push to `main`: build Windows, macOS, and Linux packages and upload them as workflow artifacts
+- Open or update a pull request: run the same multi-platform packaging validation without publishing a release
+- Push a tag like `v0.1.1`: build all three desktop packages and publish them to a GitHub Release
+- Manual run: use the Actions tab and trigger `Build And Release`
 
 ## Tech Stack
 
@@ -186,6 +197,8 @@ The memory system lives in `electron/memory.ts` and stores data under `.nexo-dat
 | `script` | Workflow state and key data for repeatable scripts or processes |
 
 The source of truth is `.nexo-data/memory.sqlite`. When an API Key and embedding support are available, Nexo tries to use Chroma for semantic retrieval. If vector retrieval is unavailable, it falls back to SQLite keyword matching.
+
+Thread compaction is intentionally separate from durable memory. Long-running chats keep a rolling thread summary in session state for current work, while only stable preferences, workflows, conventions, and long-lived facts are promoted into cross-session memory.
 
 ## Knowledge Base
 

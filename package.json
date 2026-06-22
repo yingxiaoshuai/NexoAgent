@@ -9,14 +9,22 @@
     "dev:electron": "concurrently -k \"npm:dev:web\" \"npm:dev:electron:watch\" \"npm:dev:electron:start\"",
     "dev:electron:watch": "tsc -p tsconfig.electron.json --watch --preserveWatchOutput",
     "dev:electron:start": "wait-on tcp:8106 file:dist-electron/electron/bootstrap.js file:dist-electron/electron/main.js file:dist-electron/electron/preload.js && cross-env VITE_DEV_SERVER_URL=http://localhost:8106 electron .",
+    "icons:build": "node scripts/generate-icons.mjs",
     "build:web": "tsc -p tsconfig.json --noEmit && vite build",
     "build:electron": "node -e \"require('node:fs').rmSync('dist-electron', { recursive: true, force: true })\" && tsc -p tsconfig.electron.json",
     "build": "npm run build:web && npm run build:electron",
+    "dist:win": "electron-builder --publish never --win nsis zip",
+    "dist:mac": "electron-builder --publish never --mac dmg zip",
+    "dist:linux": "electron-builder --publish never --linux AppImage tar.gz",
+    "package:win": "npm run build && npm run dist:win",
+    "package:mac": "npm run build && npm run dist:mac",
+    "package:linux": "npm run build && npm run dist:linux",
     "serve:web-console": "node dist-electron/electron/standalone.js",
     "preview": "vite preview --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "verify:context-management": "npm run build:electron && node scripts/verify-context-management.mjs",
     "verify:multimodal-models": "npm run build:electron && node scripts/verify-multimodal-models.mjs",
-    "package": "npm run build && electron-builder"
+    "package": "npm run build && electron-builder --publish never"
   },
   "dependencies": {
     "@ant-design/icons": "^5.6.1",
@@ -41,6 +49,7 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@types/busboy": "^1.5.4",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
@@ -53,6 +62,7 @@
     "cross-env": "^7.0.3",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
+    "png-to-ico": "^3.0.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.5",
     "wait-on": "^8.0.1"
@@ -60,6 +70,7 @@
   "build": {
     "appId": "com.company.nexoagent",
     "productName": "Nexo Agent",
+    "icon": "assets/nexoagent-icon.png",
     "directories": {
       "output": "release"
     },
@@ -67,18 +78,39 @@
       "dist/**/*",
       "dist-electron/**/*",
       "nexo/**/*",
+      "assets/nexoagent-icon.png",
+      "assets/nexoagent-icon.ico",
       "node_modules/sql.js/dist/sql-wasm.wasm",
       "package.json"
     ],
     "win": {
+      "icon": "assets/nexoagent-icon.ico",
       "target": [
         "nsis",
         "zip"
       ]
     },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "icon": "assets/nexoagent-icon.png",
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ],
+      "category": "Development"
+    },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/nexoagent-icon.ico",
+      "uninstallerIcon": "assets/nexoagent-icon.ico",
+      "installerHeaderIcon": "assets/nexoagent-icon.ico"
     }
   }
 }

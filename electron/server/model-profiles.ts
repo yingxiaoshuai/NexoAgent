@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { getProviderDefaultApiBase, getProviderName } from "../../src/shared/providers";
+import { getProviderDefaultApiBase, getProviderName, normalizeProviderId, normalizeServiceProviderName } from "../../src/shared/providers";
 import { MODEL_CAPABILITIES, type DiscoveredModel, type ModelCapability, type ModelProfile, type ProviderId } from "../../src/shared/types";
 import { DATA_DIR, MODEL_PROFILES_FILE } from "./config";
+import { deleteStoredModelContextCacheEntry, inferBudgetFromProviderMetadata, isExplicitProfileContextBudget, resolveModelContextBudgetWithLookup, resolveStoredModelContextBudget, upsertStoredModelContextCacheEntry } from "./model-context";
 
 interface StoredModelProfile extends Omit<ModelProfile, "hasApiKey"> {
   hasApiKey?: boolean;
@@ -16,10 +17,6 @@ const CAPABILITY_KEYWORDS: Array<[ModelCapability, RegExp]> = [
   ["text_to_speech", /\b(tts|speech|voice|audio)\b/i],
   ["embedding", /\b(embed|embedding|text-embedding|bge|gte)\b/i],
 ];
-
-function normalizeProviderId(value: unknown): ProviderId {
-  return value === "anthropic-compatible" ? "anthropic-compatible" : "openai-compatible";
-}
 
 function uniqueCapabilities(items: ModelCapability[]) {
   return MODEL_CAPABILITIES.filter((capability) => items.includes(capability));
@@ -59,6 +56,7 @@ function normalizeCapabilities(value: unknown, fallback: ModelCapability[] = ["c
 function normalizeProfile(profile: Partial<ModelProfile> & Pick<ModelProfile, "name" | "apiBase" | "model">, existing?: StoredModelProfile): StoredModelProfile {
   const providerId = normalizeProviderId(profile.providerId ?? existing?.providerId);
   const apiBase = (profile.apiBase?.trim() || existing?.apiBase?.trim() || getProviderDefaultApiBase(providerId)).replace(/\/+$/, "");
+  const providerName = normalizeServiceProviderName(profile.providerName ?? existing?.providerName, apiBase, providerId);
   const nextApiKey = profile.apiKey?.trim() ? profile.apiKey.trim() : existing?.apiKey?.trim() ?? "";
   const inferredCapabilities = normalizeCapabilities(
     profile.capabilities,
@@ -72,6 +70,7 @@ function normalizeProfile(profile: Partial<ModelProfile> & Pick<ModelProfile, "n
     id: profile.id || existing?.id || randomUUID(),
     name: profile.name.trim(),
     providerId,
+    providerName,
     apiBase,
     apiKey: nextApiKey,
     model: profile.model.trim(),
@@ -80,6 +79,13 @@ function normalizeProfile(profile: Partial<ModelProfile> & Pick<ModelProfile, "n
     temperature: profile.temperature ?? existing?.temperature ?? 0,
     description: profile.description?.trim() || existing?.description || "",
     enabled: profile.enabled ?? existing?.enabled ?? true,
+    contextWindowTokens: profile.contextWindowTokens ?? existing?.contextWindowTokens,
+    reservedOutputTokens: profile.reservedOutputTokens ?? existing?.reservedOutputTokens,
+    autoCompactTokenLimit: profile.autoCompactTokenLimit ?? existing?.autoCompactTokenLimit,
+    compactionTargetRatio: profile.compactionTargetRatio ?? existing?.compactionTargetRatio,
+    contextWindowSource: profile.contextWindowSource ?? existing?.contextWindowSource,
+    contextWindowSourceDetail: profile.contextWindowSourceDetail ?? existing?.contextWindowSourceDetail,
+    contextWindowResolvedAt: profile.contextWindowResolvedAt ?? existing?.contextWindowResolvedAt,
   };
 }
 
@@ -98,9 +104,12 @@ async function writeStoredProfiles(profiles: StoredModelProfile[]) {
   await fs.writeFile(MODEL_PROFILES_FILE, JSON.stringify(profiles, null, 2), "utf8");
 }
 
-function toPublicProfile(profile: StoredModelProfile): ModelProfile {
+async function toPublicProfile(profile: StoredModelProfile, resolvedBudget?: Partial<ModelProfile>): Promise<ModelProfile> {
+  const budget = resolvedBudget ?? await resolveStoredModelContextBudget({ profile });
   return {
     ...profile,
+    providerName: normalizeServiceProviderName(profile.providerName, profile.apiBase, profile.providerId),
+    ...budget,
     apiKey: "",
     hasApiKey: Boolean(profile.apiKey?.trim()),
   };
@@ -108,7 +117,7 @@ function toPublicProfile(profile: StoredModelProfile): ModelProfile {
 
 export async function listModelProfiles(): Promise<ModelProfile[]> {
   const profiles = await readStoredProfiles();
-  return profiles.map(toPublicProfile);
+  return Promise.all(profiles.map((profile) => toPublicProfile(profile)));
 }
 
 export async function getStoredModelProfile(id: string): Promise<StoredModelProfile | null> {
@@ -172,6 +181,17 @@ export async function saveModelProfile(profile: Partial<ModelProfile> & Pick<Mod
   const existingIndex = profile.id ? profiles.findIndex((item) => item.id === profile.id) : -1;
   const existing = existingIndex >= 0 ? profiles[existingIndex] : undefined;
   const normalized = normalizeProfile(profile, existing);
+  const hasExplicitBudget = isExplicitProfileContextBudget(profile);
+
+  if (!hasExplicitBudget) {
+    normalized.contextWindowTokens = existing && isExplicitProfileContextBudget(existing) ? existing.contextWindowTokens : undefined;
+    normalized.reservedOutputTokens = existing && isExplicitProfileContextBudget(existing) ? existing.reservedOutputTokens : undefined;
+    normalized.autoCompactTokenLimit = existing && isExplicitProfileContextBudget(existing) ? existing.autoCompactTokenLimit : undefined;
+    normalized.compactionTargetRatio = existing && isExplicitProfileContextBudget(existing) ? existing.compactionTargetRatio : undefined;
+    normalized.contextWindowSource = existing && isExplicitProfileContextBudget(existing) ? existing.contextWindowSource : undefined;
+    normalized.contextWindowSourceDetail = existing && isExplicitProfileContextBudget(existing) ? existing.contextWindowSourceDetail : undefined;
+    normalized.contextWindowResolvedAt = existing && isExplicitProfileContextBudget(existing) ? existing.contextWindowResolvedAt : undefined;
+  }
 
   if (normalized.enabled && normalized.isPrimary) {
     for (const item of profiles) {
@@ -186,12 +206,68 @@ export async function saveModelProfile(profile: Partial<ModelProfile> & Pick<Mod
   }
 
   await writeStoredProfiles(profiles);
+  if (normalized.model.trim() && hasExplicitBudget) {
+    await upsertStoredModelContextCacheEntry({
+      key: `${normalized.providerId}::${normalized.model.trim().toLowerCase()}`,
+      model: normalized.model,
+      providerId: normalized.providerId,
+      contextWindowTokens: normalized.contextWindowTokens,
+      reservedOutputTokens: normalized.reservedOutputTokens,
+      autoCompactTokenLimit: normalized.autoCompactTokenLimit,
+      compactionTargetRatio: normalized.compactionTargetRatio,
+      contextWindowSource: normalized.contextWindowSource ?? "profile",
+      contextWindowSourceDetail: normalized.contextWindowSourceDetail || "saved-profile-budget",
+      contextWindowResolvedAt: normalized.contextWindowResolvedAt,
+    });
+  }
   return toPublicProfile(normalized);
 }
 
 export async function getStoredModelProfileApiKey(id: string): Promise<string> {
   const profile = await getStoredModelProfile(id);
   return profile?.apiKey?.trim() ?? "";
+}
+
+export async function refreshModelProfileContext(id: string): Promise<ModelProfile> {
+  const profile = await getStoredModelProfile(id);
+  if (!profile) {
+    throw new Error("Model profile not found.");
+  }
+  if (!profile.model.trim()) {
+    throw new Error("This model profile does not have a model id.");
+  }
+  if (isExplicitProfileContextBudget(profile)) {
+    throw new Error("This profile uses a manual context budget. Clear the manual override before re-detecting.");
+  }
+
+  await deleteStoredModelContextCacheEntry(profile.providerId, profile.model);
+
+  const refreshProfile = {
+    ...profile,
+    contextWindowTokens: undefined,
+    reservedOutputTokens: undefined,
+    autoCompactTokenLimit: undefined,
+    compactionTargetRatio: undefined,
+    contextWindowSource: undefined,
+    contextWindowSourceDetail: undefined,
+    contextWindowResolvedAt: undefined,
+  };
+
+  const resolved = await resolveModelContextBudgetWithLookup({
+    profile: refreshProfile,
+    settings: refreshProfile,
+  });
+
+  if (resolved.contextWindowTokens) {
+    await upsertStoredModelContextCacheEntry({
+      key: `${profile.providerId || "default"}::${profile.model.trim().toLowerCase()}`,
+      model: profile.model,
+      providerId: profile.providerId,
+      ...resolved,
+    });
+  }
+
+  return toPublicProfile(profile, resolved);
 }
 
 export async function deleteModelProfile(id: string) {
@@ -216,8 +292,11 @@ interface AnthropicModelListResponse {
   error?: { message?: string };
 }
 
-function toDiscoveredModels(items: Array<{ id?: string; owned_by?: string; display_name?: string; [key: string]: unknown }>) {
-  return items
+async function toDiscoveredModels(
+  items: Array<{ id?: string; owned_by?: string; display_name?: string; [key: string]: unknown }>,
+  providerId: ProviderId
+) {
+  const discovered = items
     .filter((item): item is { id: string; owned_by?: string; display_name?: string; [key: string]: unknown } => Boolean(item.id))
     .map((item) => ({
       id: item.id,
@@ -227,6 +306,13 @@ function toDiscoveredModels(items: Array<{ id?: string; owned_by?: string; displ
       metadata: item,
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
+  return Promise.all(discovered.map(async (model) => {
+    const providerBudget = inferBudgetFromProviderMetadata(model);
+    const resolved = providerBudget?.contextWindowTokens
+      ? providerBudget
+      : await resolveStoredModelContextBudget({ discoveredModel: model, settings: { providerId, model: model.id } as Partial<ModelProfile> });
+    return { ...model, ...resolved };
+  }));
 }
 
 export async function discoverModels(apiBase: string, apiKey: string, providerId: ProviderId = "openai-compatible"): Promise<DiscoveredModel[]> {
@@ -247,7 +333,7 @@ export async function discoverModels(apiBase: string, apiKey: string, providerId
     if (!response.ok) {
       throw new Error(data.error?.message ?? `Failed to fetch ${getProviderName(normalizedProvider)} models: ${response.status}`);
     }
-    return toDiscoveredModels(data.data ?? []);
+    return toDiscoveredModels(data.data ?? [], normalizedProvider);
   }
 
   const response = await fetch(`${base}/models`, {
@@ -258,5 +344,29 @@ export async function discoverModels(apiBase: string, apiKey: string, providerId
     throw new Error(data.error?.message ?? `Failed to fetch ${getProviderName(normalizedProvider)} models: ${response.status}`);
   }
 
-  return toDiscoveredModels(data.data ?? []);
+  return toDiscoveredModels(data.data ?? [], normalizedProvider);
+}
+
+export async function resolveAndPersistModelContextBudget(profile: Partial<ModelProfile> | null, discoveredModel?: Partial<DiscoveredModel> | null) {
+  const resolutionProfile = profile?.contextWindowSource === "default"
+    ? {
+        ...profile,
+        contextWindowTokens: undefined,
+        reservedOutputTokens: undefined,
+        autoCompactTokenLimit: undefined,
+        compactionTargetRatio: undefined,
+      }
+    : profile;
+  const resolved = await resolveModelContextBudgetWithLookup({ profile: resolutionProfile, discoveredModel, settings: profile ?? undefined });
+  const model = profile?.model?.trim() || discoveredModel?.id?.trim();
+  const providerId = profile?.providerId;
+  if (model) {
+    await upsertStoredModelContextCacheEntry({
+      key: `${providerId || "default"}::${model.toLowerCase()}`,
+      model,
+      providerId,
+      ...resolved,
+    });
+  }
+  return resolved;
 }

@@ -4,7 +4,24 @@ export type StreamEvent =
   | { type: "token"; content: string }
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; output: string; elapsed: number }
-  | { type: "done"; content: string; usage?: { promptTokens?: number; completionTokens?: number } }
+  | {
+      type: "done";
+      content: string;
+      usage?: { promptTokens?: number; completionTokens?: number };
+      stopReason?: "circuit_breaker" | "max_steps";
+      circuitBreaker?: {
+        reason: string;
+        detail: string;
+        step: number;
+      };
+      contextBudget?: {
+        contextWindowTokens?: number;
+        maxInputTokens?: number;
+        autoCompactTokenLimit?: number;
+        estimatedPromptTokens?: number;
+        source?: string;
+      };
+    }
   | { type: "error"; message: string };
 
 export interface Session {
@@ -13,6 +30,9 @@ export interface Session {
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
+  threadSummary?: string;
+  threadSummaryUpdatedAt?: string;
+  threadSummaryVersion?: number;
 }
 
 export interface ToolExecutionContext {

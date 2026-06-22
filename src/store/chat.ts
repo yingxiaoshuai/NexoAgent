@@ -1,9 +1,9 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import type { AgentSettings, Attachment as ChatAttachment, ChatMessage } from "../shared/types";
-import { apiGet, apiPost, apiDelete, apiPatch, getApiBase, setRuntimeApiBase, subscribeStream } from "../services/api";
+import { apiGet, apiPost, apiDelete, apiPatch, getRuntimeApiBase, setRuntimeApiBase, subscribeStream } from "../services/api";
 import { sanitizeApiKeyForSave } from "../shared/settings";
-import { getProviderName } from "../shared/providers";
+import { getProviderDefaultApiBase, getProviderName, normalizeProviderId } from "../shared/providers";
 import type { ToolCallEvent } from "../components/ChatPanel/ToolCallSteps";
 
 export interface SessionMeta {
@@ -33,6 +33,7 @@ interface ChatStore {
   streaming: boolean;
   settings: AgentSettings;
 
+  ensureRuntimeReady: () => Promise<void>;
   loadSessions: () => Promise<void>;
   newSession: () => Promise<void>;
   selectSession: (id: string) => Promise<void>;
@@ -51,13 +52,25 @@ const defaultSettings: AgentSettings = {
   apiKey: "",
   hasApiKey: false,
   model: "gpt-4o-mini",
-  temperature: 0.4, 
+  temperature: 0.4,
+  contextWindowTokens: 128_000,
+  reservedOutputTokens: 8_192,
+  autoCompactTokenLimit: 96_000,
+  compactionTargetRatio: 0.6,
+  contextWindowSource: "default",
+  contextWindowSourceDetail: "client-default",
   maxContextTurns: 12,
   enableContextCompaction: true,
   contextCompactionThreshold: 24,
   maxSteps: 20,
   shellCommandTimeoutMs: 300_000,
   planningMode: "balanced",
+  circuitBreakerEnabled: true,
+  circuitBreakerConsecutiveFailureLimit: 3,
+  circuitBreakerRepeatedToolCallLimit: 3,
+  circuitBreakerNoProgressLimit: 4,
+  circuitBreakerMaxRuntimeMs: 600_000,
+  circuitBreakerTokenBudget: 0,
   enableMemory: true,
   enableKnowledge: true,
   workspacePath: "",
@@ -67,6 +80,16 @@ const defaultSettings: AgentSettings = {
   webPassword: "",
   channels: { web: true, desktop: true, feishu: false, dingtalk: false, wechat: false, wecom: false },
 };
+
+function normalizeSettingsShape<T extends Partial<AgentSettings>>(settings: T): T {
+  const providerId = normalizeProviderId(settings.providerId);
+  return {
+    ...settings,
+    providerId,
+    providerName: getProviderName(providerId),
+    apiBase: (settings.apiBase?.trim() || getProviderDefaultApiBase(providerId)).replace(/\/+$/, ""),
+  };
+}
 
 type DesktopApi = {
   nexoDesktop: {
@@ -82,13 +105,35 @@ function getDesktopApi(): DesktopApi["nexoDesktop"] | null {
     : null;
 }
 
+function formatAssistantError(message: string) {
+  const trimmed = message.trim();
+  if (!trimmed) return "Error";
+  return /^error:/i.test(trimmed) ? trimmed : `Error: ${trimmed}`;
+}
+
 export const useChatStore = create<ChatStore>((set, get) => {
-  async function syncSettingsToServer(settings: AgentSettings) {
+  let runtimeReadyPromise: Promise<void> | null = null;
+
+  async function ensureRuntimeReady() {
+    const explicitRuntimeBase = getRuntimeApiBase();
+    if (explicitRuntimeBase) return;
     const desktop = getDesktopApi();
-    if (desktop && !getApiBase()) {
-      const runtime = await desktop.getRuntimeInfo();
-      setRuntimeApiBase(runtime.webBaseUrl);
-    }
+    if (!desktop) return;
+    if (runtimeReadyPromise) return runtimeReadyPromise;
+
+    runtimeReadyPromise = desktop.getRuntimeInfo()
+      .then((runtime) => {
+        setRuntimeApiBase(runtime.webBaseUrl);
+      })
+      .finally(() => {
+        runtimeReadyPromise = null;
+      });
+
+    return runtimeReadyPromise;
+  }
+
+  async function syncSettingsToServer(settings: AgentSettings) {
+    await ensureRuntimeReady();
 
     const payload = sanitizeApiKeyForSave(settings);
     try {
@@ -97,12 +142,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
         hasApiKey: settings.hasApiKey || Boolean(payload.apiKey),
       });
       set({
-        settings: {
+        settings: normalizeSettingsShape({
           ...defaultSettings,
           ...synced,
           apiKey: "",
           hasApiKey: synced.hasApiKey ?? settings.hasApiKey,
-        },
+        }),
       });
     } catch (error) {
       console.warn("[settings] failed to sync to backend:", error);
@@ -118,23 +163,28 @@ export const useChatStore = create<ChatStore>((set, get) => {
   streaming: false,
   settings: defaultSettings,
   cancelStream: () => {},
+  ensureRuntimeReady,
 
   loadSessions: async () => {
+    await ensureRuntimeReady();
     const sessions = await apiGet<SessionMeta[]>("/api/sessions");
     set({ sessions });
   },
 
   newSession: async () => {
+    await ensureRuntimeReady();
     const s = await apiPost<SessionMeta>("/api/sessions", {});
     set((st) => ({ sessions: [s, ...st.sessions], activeSessionId: s.id, messages: [], toolCalls: {}, messageBlocks: {} }));
   },
 
   selectSession: async (id) => {
+    await ensureRuntimeReady();
     const messages = await apiGet<ChatMessage[]>(`/api/sessions/${id}/messages`);
     set({ activeSessionId: id, messages, toolCalls: {}, messageBlocks: {} });
   },
 
   deleteSession: async (id) => {
+    await ensureRuntimeReady();
     await apiDelete(`/api/sessions/${id}`);
     const { sessions, activeSessionId } = get();
     const next = sessions.filter((s) => s.id !== id);
@@ -144,6 +194,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
   },
 
   renameSession: async (id, title) => {
+    await ensureRuntimeReady();
     await apiPatch(`/api/sessions/${id}`, { title });
     set((st) => ({ sessions: st.sessions.map((s) => (s.id === id ? { ...s, title } : s)) }));
   },
@@ -172,7 +223,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         streaming: false,
         messages: st.messages.map((m) =>
           m.id === assistantId
-            ? { ...m, content: `❌ ${error instanceof Error ? error.message : String(error)}`, status: "error" }
+            ? { ...m, content: formatAssistantError(error instanceof Error ? error.message : String(error)), status: "error" }
             : m
         ),
       }));
@@ -252,7 +303,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           streaming: false,
           cancelStream: () => {},
           messages: st.messages.map((m) =>
-            m.id === assistantId ? { ...m, content: `❌ ${event.message as string}`, status: "error" } : m
+            m.id === assistantId ? { ...m, content: formatAssistantError(String(event.message ?? "")), status: "error" } : m
           ),
         }));
         cancel();
@@ -264,31 +315,30 @@ export const useChatStore = create<ChatStore>((set, get) => {
   loadSettings: async () => {
     const desktop = getDesktopApi();
     if (desktop) {
-      const runtime = await desktop.getRuntimeInfo();
-      setRuntimeApiBase(runtime.webBaseUrl);
+      await ensureRuntimeReady();
       const s = await desktop.loadSettings();
-      const merged = { ...defaultSettings, ...s };
+      const merged = normalizeSettingsShape({ ...defaultSettings, ...s });
       set({ settings: merged });
       await syncSettingsToServer(merged);
     } else {
       const stored = localStorage.getItem("nexo-settings");
-      let merged = { ...defaultSettings };
+      let merged = { ...defaultSettings } as AgentSettings;
       if (stored) {
         try {
           const parsed = JSON.parse(stored) as AgentSettings;
           const hasApiKey = parsed.hasApiKey || Boolean(parsed.apiKey?.trim());
-          merged = { ...defaultSettings, ...parsed, apiKey: "", hasApiKey };
+          merged = normalizeSettingsShape({ ...defaultSettings, ...parsed, apiKey: "", hasApiKey });
           set({ settings: merged });
         } catch { /* ignore */ }
       }
       try {
         const remote = await apiGet<AgentSettings>("/api/settings");
-        merged = {
+        merged = normalizeSettingsShape({
           ...merged,
           ...remote,
           apiKey: "",
           hasApiKey: remote.hasApiKey || merged.hasApiKey,
-        };
+        });
         set({ settings: merged });
       } catch { /* ignore */ }
       await syncSettingsToServer(merged);
@@ -296,22 +346,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
   },
 
   saveSettings: async (partial) => {
+    await ensureRuntimeReady();
     const merged = { ...get().settings, ...partial };
     const payload = sanitizeApiKeyForSave(merged);
     const desktop = getDesktopApi();
     if (desktop) {
       const saved = await desktop.saveSettings(payload);
-      const next = { ...defaultSettings, ...saved };
+      const next = normalizeSettingsShape({ ...defaultSettings, ...saved });
       set({ settings: next });
       // IPC save already updates backend; also POST so web clients stay in sync.
       await syncSettingsToServer(next);
     } else {
       localStorage.setItem("nexo-settings", JSON.stringify(payload));
-      const next = {
+      const next = normalizeSettingsShape({
         ...defaultSettings,
         ...payload,
         hasApiKey: Boolean(payload.apiKey) || merged.hasApiKey,
-      };
+      });
       set({ settings: next });
       await syncSettingsToServer(next);
     }

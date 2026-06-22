@@ -1,6 +1,7 @@
 import type { Application } from "express";
 import type { ModelProfile } from "../../../src/shared/types";
-import { deleteModelProfile, discoverModels, getStoredModelProfileApiKey, listModelProfiles, saveModelProfile } from "../model-profiles";
+import { normalizeProviderId } from "../../../src/shared/providers";
+import { deleteModelProfile, discoverModels, getStoredModelProfileApiKey, listModelProfiles, refreshModelProfileContext, saveModelProfile } from "../model-profiles";
 import { getWebSettings } from "../settings";
 import { toErrorMessage } from "../utils";
 
@@ -22,7 +23,7 @@ export function registerModelProfileRoutes(app: Application) {
       res.json(await discoverModels(
         apiBase ?? "",
         apiKey?.trim() || savedApiKey || fallbackApiKey,
-        providerId === "anthropic-compatible" ? "anthropic-compatible" : "openai-compatible"
+        normalizeProviderId(providerId)
       ));
     } catch (error) {
       res.status(400).json({ error: toErrorMessage(error) });
@@ -40,6 +41,14 @@ export function registerModelProfileRoutes(app: Application) {
       apiKey: incomingApiKey || (!profile.id ? fallbackApiKey : ""),
     } as Partial<ModelProfile> & Pick<ModelProfile, "name" | "apiBase" | "model">);
     res.json(saved);
+  });
+
+  app.post("/api/model-profiles/:id/refresh-context", async (req, res) => {
+    try {
+      res.json(await refreshModelProfileContext(req.params.id));
+    } catch (error) {
+      res.status(400).json({ error: toErrorMessage(error) });
+    }
   });
 
   app.delete("/api/model-profiles/:id", async (req, res) => {

@@ -7,7 +7,7 @@ import type {
   SkillMarketplace,
   SkillSearchResponse,
 } from "../../src/shared/types";
-import { readBundledJson } from "./bundled-config";
+import { readBundledJson, resolveBundledFile } from "./bundled-config";
 import {
   DATA_DIR,
   MANAGED_CUSTOM_SKILLS_DIR,
@@ -78,25 +78,20 @@ let bundledSkillsCache: StoredSkill[] | null = null;
 
 async function loadBundledSkills(): Promise<StoredSkill[]> {
   if (bundledSkillsCache) return bundledSkillsCache;
-  const rootCandidates = [
-    path.join(process.cwd(), "nexo", "skills"),
-    path.join(__dirname, "..", "..", "..", "nexo", "skills"),
-  ];
-  const existingRoot = await (async () => {
-    for (const candidate of rootCandidates) {
-      if (await fileExists(candidate)) return candidate;
-    }
-    return "";
-  })();
+  const existingRoot = await resolveBundledSkillRoot();
 
   if (existingRoot) {
-    bundledSkillsCache = await scanSkillRoot(existingRoot, {
+    const scanned = await scanSkillRoot(existingRoot, {
       source: "built-in",
       managed: false,
       category: "built-in",
       maxDepth: 2,
     });
-    return bundledSkillsCache.map((skill) => ({ ...skill, source: "built-in" as const }));
+
+    if (scanned.length > 0) {
+      bundledSkillsCache = scanned;
+      return bundledSkillsCache.map((skill) => ({ ...skill, source: "built-in" as const }));
+    }
   }
 
   const bundled = await readBundledJson<BundledSkillsFile>("skills.json");
@@ -300,6 +295,27 @@ async function fileExists(filePath: string) {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function resolveBundledSkillRoot() {
+  try {
+    const bundledToolsFile = await resolveBundledFile("tools.json");
+    return path.join(path.dirname(bundledToolsFile), "skills");
+  } catch {
+    const rootCandidates = [
+      path.join(process.cwd(), "nexo", "skills"),
+      path.join(__dirname, "..", "..", "..", "nexo", "skills"),
+    ];
+
+    for (const candidate of rootCandidates) {
+      const discovered = await findSkillDirectories(candidate, 2);
+      if (discovered.length > 0) {
+        return candidate;
+      }
+    }
+
+    return "";
   }
 }
 

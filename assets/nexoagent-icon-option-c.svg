@@ -1,0 +1,43 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="c-bg" x1="132" y1="116" x2="892" y2="908" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#16449E"/>
+      <stop offset="0.46" stop-color="#11347E"/>
+      <stop offset="1" stop-color="#091D4F"/>
+    </linearGradient>
+    <linearGradient id="c-stroke" x1="246" y1="292" x2="786" y2="738" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#D7FBFF"/>
+      <stop offset="0.4" stop-color="#9AEEFF"/>
+      <stop offset="1" stop-color="#68D6FF"/>
+    </linearGradient>
+    <linearGradient id="c-dot" x1="700" y1="226" x2="792" y2="322" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#87FFF0"/>
+      <stop offset="1" stop-color="#4FE0A7"/>
+    </linearGradient>
+    <radialGradient id="c-glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(344 286) rotate(47) scale(628)">
+      <stop offset="0" stop-color="#87E8FF" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#87E8FF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="c-soft" x="176" y="188" width="682" height="654" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+      <feGaussianBlur stdDeviation="18" result="effect1_foregroundBlur_0_1"/>
+    </filter>
+  </defs>
+
+  <rect x="72" y="72" width="880" height="880" rx="220" fill="url(#c-bg)"/>
+  <rect x="72" y="72" width="880" height="880" rx="220" fill="url(#c-glow)"/>
+  <path d="M162 152C250 126 360 122 478 158" stroke="rgba(255,255,255,0.16)" stroke-width="18" stroke-linecap="round"/>
+
+  <g filter="url(#c-soft)" opacity="0.68">
+    <path d="M254 744V292" stroke="#A8F2FF" stroke-width="52" stroke-linecap="round"/>
+    <path d="M254 744L514 462L716 744" stroke="#A8F2FF" stroke-width="52" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M514 462L748 276" stroke="#A8F2FF" stroke-width="52" stroke-linecap="round"/>
+    <circle cx="772" cy="254" r="30" fill="#76F0CA"/>
+  </g>
+
+  <path d="M254 744V292" stroke="url(#c-stroke)" stroke-width="44" stroke-linecap="round"/>
+  <path d="M254 744L514 462L716 744" stroke="url(#c-stroke)" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M514 462L748 276" stroke="url(#c-stroke)" stroke-width="44" stroke-linecap="round"/>
+  <circle cx="772" cy="254" r="26" fill="url(#c-dot)"/>
+</svg>

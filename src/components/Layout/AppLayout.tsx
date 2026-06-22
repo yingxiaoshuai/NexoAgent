@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Badge, Divider, Layout, Tooltip } from "antd";
 import {
   ApiOutlined,
@@ -29,32 +29,35 @@ import { useTheme } from "../../theme";
 import { useI18n } from "../../i18n";
 
 const { Content, Sider } = Layout;
+const brandIconUrl = new URL("../../../assets/nexoagent-icon.svg", import.meta.url).href;
 
 type View = "chat" | "memory" | "knowledge" | "tools" | "skills" | "tasks" | "logs" | "channels" | "settings";
 
 export const AppLayout: React.FC = () => {
   const [view, setView] = useState<View>("chat");
-  const { loadSessions, newSession, loadSettings } = useChatStore();
-  const initialized = useRef(false);
+  const { ensureRuntimeReady, loadSessions, newSession, loadSettings } = useChatStore();
   const { mode, colors, toggleTheme } = useTheme();
   const { lang, setLang, t } = useI18n();
 
   useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
     let disposed = false;
     let refreshTimer: number | undefined;
 
     void (async () => {
-      await loadSettings();
+      await ensureRuntimeReady();
       if (disposed) return;
-      const sessions = await loadSessions().then(() => useChatStore.getState().sessions);
+      await loadSessions();
+      const sessions = useChatStore.getState().sessions;
       if (disposed) return;
       if (sessions.length === 0) {
         await newSession();
       } else {
         await useChatStore.getState().selectSession(sessions[0].id);
       }
+
+      void loadSettings().catch((error) => {
+        console.warn("[app] settings load failed:", error);
+      });
 
       refreshTimer = window.setInterval(() => {
         void useChatStore.getState().loadSessions();
@@ -95,7 +98,11 @@ export const AppLayout: React.FC = () => {
     <Layout style={{ height: "100vh", background: colors.bgPrimary }}>
       <Sider width={52} style={{ background: colors.bgSecondary, borderRight: `1px solid ${colors.border}` }}>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "12px 0", gap: 4, height: "100%" }}>
-          <div style={{ color: colors.accent, fontSize: 20, marginBottom: 16, fontWeight: 700 }}>N</div>
+          <img
+            src={brandIconUrl}
+            alt="NexoAgent"
+            style={{ width: 22, height: 22, marginBottom: 16, display: "block", borderRadius: 6 }}
+          />
 
           {navItem("chat", <MessageOutlined />, t("chat"))}
 

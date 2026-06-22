@@ -6,7 +6,16 @@ import type { AgentSettings, DiscoveredModel, ModelCapability, ModelProfile, Pro
 import { useTheme } from "../../theme";
 import { apiDelete, apiGet, apiPost } from "../../services/api";
 import { sanitizeApiKeyForSave, SAVED_API_KEY_MASK } from "../../shared/settings";
-import { getProviderName, PROVIDER_OPTIONS } from "../../shared/providers";
+import {
+  getDefaultServiceProviderName,
+  getProviderDefaultApiBase,
+  getProviderName,
+  getServiceProviderDefaultApiBase,
+  getServiceProviderOptions,
+  normalizeProviderId,
+  normalizeServiceProviderName,
+  PROVIDER_OPTIONS,
+} from "../../shared/providers";
 
 const { Text } = Typography;
 
@@ -35,6 +44,28 @@ const CAPABILITY_COLORS: Record<ModelCapability, string> = {
 const MODEL_CAPABILITIES: ModelCapability[] = ["orchestration", "chat", "vision", "image_generation", "image_editing", "speech_to_text", "text_to_speech", "embedding"];
 
 const capabilityOptions = MODEL_CAPABILITIES.map((value) => ({ value, label: CAPABILITY_LABELS[value] }));
+const tokenCountFormatter = new Intl.NumberFormat("en-US");
+
+function formatTokenCount(value?: number) {
+  return typeof value === "number" && Number.isFinite(value) ? tokenCountFormatter.format(value) : "-";
+}
+
+function getContextSourceMeta(profile: Pick<ModelProfile, "contextWindowSource" | "contextWindowSourceDetail">) {
+  const source = profile.contextWindowSource;
+  const detail = (profile.contextWindowSourceDetail || "").toLowerCase();
+
+  if (source === "user" || source === "profile") return { label: "manual", color: "gold" };
+  if (source === "provider") return { label: "provider", color: "blue" };
+  if (source === "lookup") return { label: "lookup", color: "purple" };
+  if (source === "cache") return { label: "cache", color: "cyan" };
+  if (source === "dictionary" && detail.startsWith("model-name token hint")) return { label: "hint", color: "orange" };
+  if (source === "dictionary") return { label: "dictionary", color: "green" };
+  return { label: source || "default", color: "default" };
+}
+
+function getServiceProviderLabel(profile: Pick<ModelProfile, "providerName" | "apiBase" | "providerId">) {
+  return normalizeServiceProviderName(profile.providerName, profile.apiBase, profile.providerId) || "unknown";
+}
 
 const ApiKeyField: React.FC<{
   value?: string;
@@ -85,8 +116,20 @@ export const Settings: React.FC = () => {
   const [profileForm] = Form.useForm<ModelProfile>();
   const [discovering, setDiscovering] = useState(false);
   const [discoveredModels, setDiscoveredModels] = useState<DiscoveredModel[]>([]);
+  const [refreshingContextProfileId, setRefreshingContextProfileId] = useState("");
   const watchedProviderId = Form.useWatch("providerId", profileForm) as ProviderId | undefined;
+  const watchedProviderName = Form.useWatch("providerName", profileForm) as string | undefined;
+  const watchedApiBase = Form.useWatch("apiBase", profileForm) as string | undefined;
   const watchedApiKey = Form.useWatch("apiKey", profileForm) as string | undefined;
+  const normalizedWatchedProviderId = normalizeProviderId(watchedProviderId);
+  const serviceProviderOptions = (() => {
+    const baseOptions = getServiceProviderOptions(normalizedWatchedProviderId);
+    const currentName = normalizeServiceProviderName(watchedProviderName, String(watchedApiBase ?? ""), normalizedWatchedProviderId);
+    if (!currentName || baseOptions.some((option) => option.value === currentName)) {
+      return baseOptions;
+    }
+    return [{ value: currentName, label: currentName }, ...baseOptions];
+  })();
 
   useEffect(() => {
     void loadSettings();
@@ -124,10 +167,14 @@ export const Settings: React.FC = () => {
   };
 
   const openCreateProfile = () => {
+    const providerId = normalizeProviderId(settings.providerId);
+    const apiBase = settings.apiBase?.trim() || getProviderDefaultApiBase(providerId);
     setEditingProfile(null);
     profileForm.resetFields();
     profileForm.setFieldsValue({
-      providerId: settings.providerId || "openai-compatible",
+      providerId,
+      providerName: normalizeServiceProviderName(getDefaultServiceProviderName(providerId), apiBase, providerId),
+      apiBase,
       apiKey: "",
       name: "",
       model: "",
@@ -145,6 +192,8 @@ export const Settings: React.FC = () => {
     setEditingProfile(profile);
     profileForm.setFieldsValue({
       ...profile,
+      providerId: normalizeProviderId(profile.providerId),
+      providerName: normalizeServiceProviderName(profile.providerName, profile.apiBase, profile.providerId),
       apiKey: "",
       capabilities: profile.capabilities?.length ? profile.capabilities : ["chat"],
     });
@@ -153,12 +202,13 @@ export const Settings: React.FC = () => {
   };
 
   const discoverProfileModels = async () => {
-    const values = await profileForm.validateFields(["providerId"]);
+    const values = await profileForm.validateFields(["providerId", "apiBase"]);
     const apiKeyValue = String(profileForm.getFieldValue("apiKey") ?? "");
     setDiscovering(true);
     try {
       const models = await apiPost<DiscoveredModel[]>("/api/model-profiles/discover", {
         providerId: values.providerId,
+        apiBase: String(values.apiBase ?? ""),
         apiKey: apiKeyValue === SAVED_API_KEY_MASK ? "" : apiKeyValue,
         profileId: editingProfile?.id,
       });
@@ -168,6 +218,11 @@ export const Settings: React.FC = () => {
         const first = models[0];
         profileForm.setFieldsValue({
           model: first.id,
+          providerName: normalizeServiceProviderName(
+            profileForm.getFieldValue("providerName") || first.ownedBy || "",
+            String(values.apiBase ?? ""),
+            values.providerId
+          ),
           capabilities: first.capabilities.length ? first.capabilities : ["chat"],
           name: profileForm.getFieldValue("name") || first.label,
           description: profileForm.getFieldValue("description") || (first.ownedBy ? `Discovered from ${first.ownedBy}` : "Discovered from provider"),
@@ -185,8 +240,10 @@ export const Settings: React.FC = () => {
     const saved = await apiPost<ModelProfile>("/api/model-profiles", {
       ...editingProfile,
       ...values,
+      providerName: normalizeServiceProviderName(values.providerName, String(values.apiBase ?? ""), values.providerId),
+      apiBase: String(values.apiBase ?? "").trim(),
       apiKey: values.apiKey === SAVED_API_KEY_MASK ? "" : values.apiKey,
-      providerId: values.providerId || "openai-compatible",
+      providerId: normalizeProviderId(values.providerId),
     });
 
     setProfiles((current) => {
@@ -233,6 +290,24 @@ export const Settings: React.FC = () => {
     setProfiles((current) => current.map((item) => (item.id === saved.id ? saved : item)));
   };
 
+  const refreshProfileContext = async (profile: ModelProfile) => {
+    if (profile.contextWindowSource === "user" || profile.contextWindowSource === "profile") {
+      void messageApi.info("This profile is using a manual context budget. Clear the manual override before re-detecting.");
+      return;
+    }
+
+    setRefreshingContextProfileId(profile.id);
+    try {
+      const saved = await apiPost<ModelProfile>(`/api/model-profiles/${profile.id}/refresh-context`, {});
+      setProfiles((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+      void messageApi.success(`Context budget refreshed from ${getContextSourceMeta(saved).label}.`);
+    } catch (error) {
+      void messageApi.error(error instanceof Error ? error.message : "Context refresh failed.");
+    } finally {
+      setRefreshingContextProfileId("");
+    }
+  };
+
   const modelOptions = discoveredModels.map((model) => ({
     value: model.id,
     label: model.ownedBy ? `${model.label} · ${model.ownedBy}` : model.label,
@@ -248,7 +323,7 @@ export const Settings: React.FC = () => {
       void discoverProfileModels();
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [profileModalOpen, watchedProviderId, watchedApiKey, editingProfile?.id, editingProfile?.hasApiKey]);
+  }, [profileModalOpen, watchedProviderId, watchedApiBase, watchedApiKey, editingProfile?.id, editingProfile?.hasApiKey]);
 
   return (
     <div style={{ padding: "28px 32px", maxWidth: 1040, color: colors.textPrimary }}>
@@ -342,6 +417,16 @@ export const Settings: React.FC = () => {
                 <Switch checked={Boolean(profile.isPrimary)} disabled={!profile.enabled} onChange={(value) => void setPrimaryProfile(profile, value)} />
               </Space>,
               <Switch key="enabled" checked={profile.enabled} onChange={(value) => void toggleProfileEnabled(profile, value)} />,
+              <Button
+                key="refresh-context"
+                type="text"
+                icon={<ReloadOutlined />}
+                disabled={profile.contextWindowSource === "user" || profile.contextWindowSource === "profile"}
+                loading={refreshingContextProfileId === profile.id}
+                onClick={() => void refreshProfileContext(profile)}
+              >
+                重探测
+              </Button>,
               <Button key="edit" type="text" icon={<EditOutlined />} onClick={() => openEditProfile(profile)} />,
               <Button key="delete" danger type="text" icon={<DeleteOutlined />} onClick={() => void deleteProfile(profile.id)} />,
             ]}
@@ -352,8 +437,10 @@ export const Settings: React.FC = () => {
                   <span style={{ color: colors.textPrimary, fontWeight: 500 }}>{profile.name}</span>
                   {profile.isPrimary && <Tag color="blue">主控</Tag>}
                   <Tag color={profile.enabled ? "green" : "default"}>{profile.enabled ? "启用" : "停用"}</Tag>
+                  <Tag color="cyan">{getServiceProviderLabel(profile)}</Tag>
                   <Tag>{getProviderName(profile.providerId)}</Tag>
                   {profile.hasApiKey && <Tag color="gold">已保存密钥</Tag>}
+                  <Tag color={getContextSourceMeta(profile).color}>{getContextSourceMeta(profile).label}</Tag>
                 </Space>
               }
               description={
@@ -366,6 +453,15 @@ export const Settings: React.FC = () => {
                       </Tag>
                     ))}
                   </Space>
+                  <Text style={{ color: colors.textSecondary }}>{profile.apiBase}</Text>
+                  <Space wrap size={8}>
+                    <Text style={{ color: colors.textSecondary }}>window {formatTokenCount(profile.contextWindowTokens)}</Text>
+                    <Text style={{ color: colors.textSecondary }}>reserve {formatTokenCount(profile.reservedOutputTokens)}</Text>
+                    <Text style={{ color: colors.textSecondary }}>compact {formatTokenCount(profile.autoCompactTokenLimit)}</Text>
+                  </Space>
+                  {profile.contextWindowSourceDetail && (
+                    <Text style={{ color: colors.textMuted, fontSize: 12 }}>{profile.contextWindowSourceDetail}</Text>
+                  )}
                   {profile.description && <Text style={{ color: colors.textSecondary }}>{profile.description}</Text>}
                 </Space>
               }
@@ -394,9 +490,59 @@ export const Settings: React.FC = () => {
           <Form.Item name="providerId" label="协议" rules={[{ required: true, message: "请选择协议" }]}>
             <Select
               options={PROVIDER_OPTIONS}
-              onChange={() => {
-                profileForm.setFieldsValue({ model: "", capabilities: ["chat"] });
+              onChange={(nextProviderId) => {
+                const previousProviderId = normalizeProviderId(profileForm.getFieldValue("providerId"));
+                const currentProviderName = String(profileForm.getFieldValue("providerName") ?? "").trim();
+                const currentApiBase = String(profileForm.getFieldValue("apiBase") ?? "").trim();
+                const previousDefaultApiBase = getProviderDefaultApiBase(previousProviderId);
+                const nextDefaultApiBase = getProviderDefaultApiBase(nextProviderId);
+                const previousServiceDefault = getServiceProviderDefaultApiBase(currentProviderName, previousProviderId);
+                const nextProviderName = !currentProviderName
+                  || currentProviderName === normalizeServiceProviderName(currentProviderName, currentApiBase, previousProviderId)
+                  || (previousServiceDefault && currentApiBase === previousServiceDefault)
+                  ? normalizeServiceProviderName(getDefaultServiceProviderName(nextProviderId), nextDefaultApiBase, nextProviderId)
+                  : currentProviderName;
+                profileForm.setFieldsValue({
+                  providerName: nextProviderName,
+                  model: "",
+                  capabilities: ["chat"],
+                  apiBase: !currentApiBase || currentApiBase === previousDefaultApiBase ? nextDefaultApiBase : currentApiBase,
+                });
                 setDiscoveredModels([]);
+              }}
+            />
+          </Form.Item>
+                   <Form.Item
+            name="providerName"
+            label={"API \u670d\u52a1\u63d0\u4f9b\u5546"}
+            extra={"\u7528\u4e8e\u533a\u5206\u540c\u534f\u8bae\u4e0b\u7684\u4e0d\u540c\u670d\u52a1\u5546\uff0c\u4f8b\u5982 DeepSeek\u3001OpenRouter\u3001\u5c0f\u7c73 Mimo\u3002"}
+          >
+            <Select
+              showSearch
+              options={serviceProviderOptions}
+              placeholder={"\u8bf7\u9009\u62e9 API \u670d\u52a1\u63d0\u4f9b\u5546"}
+              onChange={(nextProviderName) => {
+                const defaultApiBase = getServiceProviderDefaultApiBase(nextProviderName, normalizedWatchedProviderId);
+                if (!defaultApiBase) return;
+                profileForm.setFieldsValue({
+                  providerName: normalizeServiceProviderName(nextProviderName, defaultApiBase, normalizedWatchedProviderId),
+                  apiBase: defaultApiBase,
+                  model: "",
+                });
+                setDiscoveredModels([]);
+              }}
+            />
+          </Form.Item>
+          <Form.Item name="apiBase" label="API Base">
+            <Input
+              placeholder={getServiceProviderDefaultApiBase(watchedProviderName, normalizedWatchedProviderId) || (watchedProviderId ? getProviderDefaultApiBase(watchedProviderId) : "https://api.example.com/v1")}
+              onBlur={(event) => {
+                const currentProviderName = String(profileForm.getFieldValue("providerName") ?? "").trim();
+                if (!currentProviderName || currentProviderName === "???") {
+                  profileForm.setFieldsValue({
+                    providerName: normalizeServiceProviderName(currentProviderName, event.target.value, normalizedWatchedProviderId),
+                  });
+                }
               }}
             />
           </Form.Item>

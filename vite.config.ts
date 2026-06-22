@@ -3,6 +3,7 @@ import { defineConfig } from "vite";
 import { NEXO_API_PORT, VITE_DEV_PORT } from "./src/shared/ports";
 
 export default defineConfig({
+  base: "./",
   plugins: [react()],
   cacheDir: ".vite-cache",
   server: {

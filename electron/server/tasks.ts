@@ -3,7 +3,7 @@ import type { ChatMessage } from "../../src/shared/types";
 import { streamFromLLM } from "./agent";
 import { serverLog } from "./logger";
 import { buildRuntimeSettings } from "./settings";
-import { getSessionsMap, saveSessionsToDisk } from "./sessions";
+import { ensureSessionsLoaded, getSessionsMap, saveSessionsToDisk } from "./sessions";
 import { createSseQueue, scheduleSseCleanup } from "./sse";
 import { ensureTasksLoaded, saveTasks, taskStore } from "./task-store";
 import type { ScheduledTask, Session } from "./types";
@@ -63,6 +63,7 @@ function taskIsDue(task: ScheduledTask, now: Date) {
 
 export async function executeTask(task: ScheduledTask, getStoredApiKey: () => string) {
   await ensureTasksLoaded();
+  await ensureSessionsLoaded();
   const now = new Date().toISOString();
   const sessionId = randomUUID();
   const requestId = randomUUID();
@@ -85,7 +86,7 @@ export async function executeTask(task: ScheduledTask, getStoredApiKey: () => st
   createSseQueue(requestId);
 
   const settings = buildRuntimeSettings();
-  const doneEvent = await streamFromLLM(settings, [...session.messages], requestId, getStoredApiKey());
+  const doneEvent = await streamFromLLM(settings, session, requestId, getStoredApiKey());
   if (doneEvent) {
     session.messages.push({
       id: randomUUID(),

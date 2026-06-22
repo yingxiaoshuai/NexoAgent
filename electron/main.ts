@@ -5,7 +5,7 @@ import http from "node:http";
 import net from "node:net";
 import { createExpressApp } from "./server/index";
 import { applyAgentSettings } from "./server/settings";
-import { getProviderName } from "../src/shared/providers";
+import { getProviderDefaultApiBase, getProviderName, normalizeProviderId } from "../src/shared/providers";
 import type {
   AgentSettings,
   RuntimeInfo
@@ -27,12 +27,24 @@ const defaultSettings: AgentSettings = {
   hasApiKey: false,
   model: "gpt-4o-mini",
   temperature: 0.4,
+  contextWindowTokens: 128_000,
+  reservedOutputTokens: 8_192,
+  autoCompactTokenLimit: 96_000,
+  compactionTargetRatio: 0.6,
+  contextWindowSource: "default",
+  contextWindowSourceDetail: "desktop-default",
   maxContextTurns: 12,
   enableContextCompaction: true,
   contextCompactionThreshold: 24,
   maxSteps: 20,
   shellCommandTimeoutMs: 300_000,
   planningMode: "balanced",
+  circuitBreakerEnabled: true,
+  circuitBreakerConsecutiveFailureLimit: 3,
+  circuitBreakerRepeatedToolCallLimit: 3,
+  circuitBreakerNoProgressLimit: 4,
+  circuitBreakerMaxRuntimeMs: 600_000,
+  circuitBreakerTokenBudget: 0,
   enableMemory: true,
   enableKnowledge: true,
   workspacePath: "",
@@ -60,6 +72,16 @@ if (!gotSingleInstanceLock) {
 }
 
 let cachedApiKey = "";
+
+function normalizeSettingsShape<T extends Partial<AgentSettings>>(settings: T): T {
+  const providerId = normalizeProviderId(settings.providerId);
+  return {
+    ...settings,
+    providerId,
+    providerName: getProviderName(providerId),
+    apiBase: (settings.apiBase?.trim() || getProviderDefaultApiBase(providerId)).replace(/\/+$/, ""),
+  };
+}
 
 // 启动时预加载 API Key，并在每次保存设置后刷新
 async function refreshCachedApiKey() {
@@ -98,20 +120,26 @@ async function syncServerSettingsFromDisk() {
   const stored = await readStoredSettings();
   if (!stored) return;
   const apiKey = decryptApiKey(stored);
+  const normalized = normalizeSettingsShape(stored);
   applyAgentSettings({
     ...defaultSettings,
-    ...stored,
+    ...normalized,
     apiKey,
     hasApiKey: Boolean(apiKey),
   });
 }
 
 function pushSettingsToBackend(settings: AgentSettings, apiKey = "") {
+  const normalized = normalizeSettingsShape(settings);
   applyAgentSettings({
-    ...settings,
+    ...normalized,
     apiKey,
-    hasApiKey: Boolean(apiKey) || settings.hasApiKey,
+    hasApiKey: Boolean(apiKey) || normalized.hasApiKey,
   });
+}
+
+function getDesktopAppUrl() {
+  return `http://localhost:${webServerPort}`;
 }
 
 async function startHttpServer() {
@@ -122,13 +150,25 @@ async function startHttpServer() {
   const port = await findAvailablePort(9898, host);
   webServerPort = port;
   httpServer = http.createServer(expressApp);
-  httpServer.listen(port, host, () => {
-    console.log(`Nexo Agent web console: http://localhost:${port}`);
+  await new Promise<void>((resolve, reject) => {
+    httpServer!.once("error", reject);
+    httpServer!.listen(port, host, () => {
+      console.log(`Nexo Agent web console: ${getDesktopAppUrl()}`);
+      resolve();
+    });
   });
 }
 
 function settingsPath() {
   return path.join(app.getPath("userData"), "settings.json");
+}
+
+function appAssetPath(fileName: string) {
+  return path.join(app.getAppPath(), "assets", fileName);
+}
+
+function windowIconPath() {
+  return process.platform === "win32" ? appAssetPath("nexoagent-icon.ico") : appAssetPath("nexoagent-icon.png");
 }
 
 async function readStoredSettings(): Promise<StoredSettings | null> {
@@ -177,10 +217,11 @@ function encryptApiKey(apiKey: string) {
 async function loadSettings(): Promise<AgentSettings> {
   const stored = await readStoredSettings();
   const apiKey = decryptApiKey(stored);
+  const normalized = stored ? normalizeSettingsShape(stored) : null;
 
   return {
     ...defaultSettings,
-    ...(stored ?? {}),
+    ...(normalized ?? {}),
     apiKey: "",
     hasApiKey: Boolean(apiKey)
   };
@@ -188,7 +229,7 @@ async function loadSettings(): Promise<AgentSettings> {
 
 async function saveSettings(settings: AgentSettings): Promise<AgentSettings> {
   const existing = await loadSettings();
-  const mergedInput = { ...existing, ...settings };
+  const mergedInput = normalizeSettingsShape({ ...existing, ...settings });
   const existingStored = await readStoredSettings();
   const { apiKey, hasApiKey, ...settingsForDisk } = {
     ...defaultSettings,
@@ -219,6 +260,7 @@ function createWindow() {
     height: 900,
     minWidth: 1080,
     minHeight: 720,
+    icon: windowIconPath(),
     title: "Nexo Agent",
     backgroundColor: "#0e1726",
     show: false,
@@ -242,7 +284,7 @@ function createWindow() {
   mainWindow.webContents.on("will-navigate", (event, url) => {
     const isAppUrl = isDev
       ? url.startsWith(process.env.VITE_DEV_SERVER_URL ?? "")
-      : url.startsWith("file://");
+      : url.startsWith(getDesktopAppUrl());
 
     if (!isAppUrl) {
       event.preventDefault();
@@ -254,7 +296,7 @@ function createWindow() {
     void mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL as string);
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
-    void mainWindow.loadFile(path.join(__dirname, "..", "..", "dist", "index.html"));
+    void mainWindow.loadURL(getDesktopAppUrl());
   }
 }
 
@@ -263,7 +305,7 @@ ipcMain.handle("runtime:info", (): RuntimeInfo => ({
   platform: process.platform,
   version: app.getVersion(),
   userDataPath: app.getPath("userData"),
-  webBaseUrl: `http://localhost:${webServerPort}`,
+  webBaseUrl: getDesktopAppUrl(),
 }));
 
 ipcMain.handle("settings:load", loadSettings);
@@ -285,6 +327,9 @@ if (gotSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     await startHttpServer();
+    if (process.platform === "darwin" && app.dock) {
+      app.dock.setIcon(appAssetPath("nexoagent-icon.png"));
+    }
     createWindow();
 
     app.on("activate", () => {

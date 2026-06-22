@@ -51,3 +51,14 @@ The system MUST handle missing or inconsistent Chroma vectors and backfill vecto
 - **WHEN** credentials become available for a memory row that lacks a Chroma vector
 - **THEN** the system can upsert the Chroma vector without changing the SQLite memory id or content
 
+### Requirement: Memory Recall Preserved In Minimal Runtime
+Semantic memory recall SHALL remain available in the reduced built-in toolset and continue serving as a structured non-shell context source for the orchestrator.
+
+#### Scenario: Recall memory remains available after tool reduction
+- **WHEN** the reduced runtime loads its preserved built-in tools
+- **THEN** semantic memory recall SHALL remain callable through the preserved memory tool path
+
+#### Scenario: Missing removed tools do not disable memory recall
+- **WHEN** dedicated file, HTTP, skills, and scheduled-task tools are removed from the runtime
+- **THEN** memory retrieval SHALL continue functioning without depending on those removed tools
+

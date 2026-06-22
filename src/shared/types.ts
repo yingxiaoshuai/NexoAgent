@@ -6,6 +6,15 @@ export type ProviderId =
 
 export type PlanningMode = "fast" | "balanced" | "deep";
 
+export type ModelContextSource =
+  | "user"
+  | "profile"
+  | "dictionary"
+  | "provider"
+  | "lookup"
+  | "cache"
+  | "default";
+
 export const MODEL_CAPABILITIES = [
   "orchestration",
   "chat",
@@ -33,7 +42,30 @@ export type ChannelKey =
   | "wechat"
   | "wecom";
 
-export interface AgentSettings {
+export interface ModelContextBudget {
+  contextWindowTokens?: number;
+  reservedOutputTokens?: number;
+  autoCompactTokenLimit?: number;
+  compactionTargetRatio?: number;
+  contextWindowSource?: ModelContextSource;
+  contextWindowSourceDetail?: string;
+  contextWindowResolvedAt?: string;
+}
+
+export type CircuitBreakerReason =
+  | "repeated_tool_calls"
+  | "consecutive_failures"
+  | "no_progress"
+  | "runtime_limit"
+  | "token_budget";
+
+export interface CircuitBreakerInfo {
+  reason: CircuitBreakerReason;
+  detail: string;
+  step: number;
+}
+
+export interface AgentSettings extends ModelContextBudget {
   providerId: ProviderId;
   providerName: string;
   apiBase: string;
@@ -48,6 +80,12 @@ export interface AgentSettings {
   /** Default timeout for shell_command when timeoutMs is omitted (ms). */
   shellCommandTimeoutMs: number;
   planningMode: PlanningMode;
+  circuitBreakerEnabled: boolean;
+  circuitBreakerConsecutiveFailureLimit: number;
+  circuitBreakerRepeatedToolCallLimit: number;
+  circuitBreakerNoProgressLimit: number;
+  circuitBreakerMaxRuntimeMs: number;
+  circuitBreakerTokenBudget: number;
   enableMemory: boolean;
   enableKnowledge: boolean;
   workspacePath: string;
@@ -96,10 +134,11 @@ export interface ToolCapability {
   description: string;
 }
 
-export interface ModelProfile {
+export interface ModelProfile extends ModelContextBudget {
   id: string;
   name: string;
   providerId: ProviderId;
+  providerName?: string;
   apiBase: string;
   apiKey: string;
   hasApiKey: boolean;
@@ -111,7 +150,7 @@ export interface ModelProfile {
   enabled: boolean;
 }
 
-export interface DiscoveredModel {
+export interface DiscoveredModel extends ModelContextBudget {
   id: string;
   label: string;
   ownedBy?: string;

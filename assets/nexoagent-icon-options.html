@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexoAgent Icon Options</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eaf1fb;
+      --panel: rgba(255, 255, 255, 0.92);
+      --border: rgba(18, 43, 88, 0.12);
+      --title: #132b55;
+      --text: #476085;
+      --chip: #dceaff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(108, 190, 255, 0.24), transparent 34%),
+        radial-gradient(circle at bottom right, rgba(124, 239, 215, 0.18), transparent 28%),
+        linear-gradient(180deg, #f7fbff 0%, var(--bg) 100%);
+      color: var(--title);
+    }
+
+    .wrap {
+      width: 1560px;
+      margin: 0 auto;
+      padding: 44px 40px 52px;
+    }
+
+    .header {
+      margin-bottom: 28px;
+    }
+
+    .title {
+      margin: 0;
+      font-size: 42px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
+    .sub {
+      margin-top: 10px;
+      font-size: 18px;
+      color: var(--text);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 26px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 32px;
+      padding: 22px 22px 26px;
+      box-shadow: 0 24px 60px rgba(23, 43, 83, 0.08);
+      backdrop-filter: blur(14px);
+    }
+
+    .icon {
+      display: block;
+      width: 100%;
+      aspect-ratio: 1;
+      border-radius: 26px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(228, 237, 252, 0.58));
+      border: 1px solid rgba(23, 43, 83, 0.08);
+    }
+
+    .meta {
+      margin-top: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .label {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 0.01em;
+    }
+
+    .chip {
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: var(--chip);
+      color: #21437d;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .desc {
+      margin-top: 12px;
+      color: var(--text);
+      font-size: 17px;
+      line-height: 1.65;
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="header">
+      <h1 class="title">NexoAgent Minimal Icon Concepts</h1>
+      <div class="sub">Three simplified directions inspired by your reference: deep blue background, gradient line work, and a single letterform focus.</div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <img class="icon" src="./nexoagent-icon-option-a.svg" alt="NexoAgent icon option A">
+        <div class="meta">
+          <div class="label">Option A</div>
+          <div class="chip">Classic N</div>
+        </div>
+        <div class="desc">The safest desktop-app direction. Clear, stable, and easy to recognize at small sizes.</div>
+      </article>
+
+      <article class="card">
+        <img class="icon" src="./nexoagent-icon-option-b.svg" alt="NexoAgent icon option B">
+        <div class="meta">
+          <div class="label">Option B</div>
+          <div class="chip">NA Monogram</div>
+        </div>
+        <div class="desc">A merged N and A mark. More like a brand logo, with slightly stronger personality.</div>
+      </article>
+
+      <article class="card">
+        <img class="icon" src="./nexoagent-icon-option-c.svg" alt="NexoAgent icon option C">
+        <div class="meta">
+          <div class="label">Option C</div>
+          <div class="chip">Agent Node</div>
+        </div>
+        <div class="desc">Keeps the minimal lines and adds one signal node to hint at connection and execution.</div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

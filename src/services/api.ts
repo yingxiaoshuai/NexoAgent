@@ -9,13 +9,13 @@ export function setRuntimeApiBase(baseUrl?: string) {
   runtimeBaseUrl = baseUrl?.trim().replace(/\/+$/, "") || "";
 }
 
+export function getRuntimeApiBase() {
+  return runtimeBaseUrl;
+}
+
 function resolveApiBase() {
   if (runtimeBaseUrl) {
     return runtimeBaseUrl;
-  }
-
-  if (isElectron()) {
-    return NEXO_API_URL;
   }
 
   if (typeof window !== "undefined") {
@@ -120,7 +120,7 @@ export function subscribeStream(
     if (data.type === "done" || data.type === "error") stream.close();
   };
   stream.onerror = () => {
-    onEvent({ type: "error", message: "实时响应连接中断，请稍后重试。" });
+    onEvent({ type: "error", message: "Real-time response stream was interrupted. Please try again." });
     stream.close();
   };
   return () => stream.close();

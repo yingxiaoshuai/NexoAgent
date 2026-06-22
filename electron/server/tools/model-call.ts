@@ -2,6 +2,7 @@ import type { ToolExecutionContext } from "../types";
 import { findStoredModelProfile, findStoredModelProfileByCapability } from "../model-profiles";
 import { getOptionalNumberArg, getOptionalStringArg, getStringArg } from "../utils";
 import { isModelCapability, type ModelCapability } from "../../../src/shared/types";
+import { resolveStoredModelContextBudget } from "../model-context";
 
 interface OpenAICompatibleResponse {
   choices?: Array<{
@@ -32,6 +33,7 @@ async function resolveModelConfig(args: Record<string, unknown>, ctx: ToolExecut
     if (!profile) {
       throw new Error(`Unknown model profile: ${profileQuery}`);
     }
+    const budget = await resolveStoredModelContextBudget({ profile, settings: ctx.settings });
 
     return {
       name: profile.name,
@@ -39,6 +41,7 @@ async function resolveModelConfig(args: Record<string, unknown>, ctx: ToolExecut
       apiKey: profile.apiKey,
       model: profile.model,
       temperature: profile.temperature ?? ctx.settings.temperature,
+      budget,
     };
   }
 
@@ -46,24 +49,28 @@ async function resolveModelConfig(args: Record<string, unknown>, ctx: ToolExecut
     const profile = await findStoredModelProfileByCapability(capability)
       ?? (capability === "chat" ? await findStoredModelProfileByCapability("orchestration") : null);
     if (profile) {
+      const budget = await resolveStoredModelContextBudget({ profile, settings: ctx.settings });
       return {
         name: profile.name,
         apiBase: profile.apiBase,
         apiKey: profile.apiKey,
         model: profile.model,
         temperature: profile.temperature ?? ctx.settings.temperature,
+        budget,
       };
     }
     throw new Error(`No enabled model profile is configured for capability "${capability}". Configure a specialist model in Settings > Models.`);
   }
 
   if (!profileQuery || profileQuery === "default") {
+    const budget = await resolveStoredModelContextBudget({ settings: ctx.settings });
     return {
       name: "default",
       apiBase: ctx.apiBase,
       apiKey: ctx.apiKey,
       model: ctx.settings.model,
       temperature: ctx.settings.temperature,
+      budget,
     };
   }
 
@@ -111,6 +118,7 @@ export async function invokeModel(args: Record<string, unknown>, ctx: ToolExecut
   return [
     `Profile: ${config.name}`,
     `Model: ${config.model}`,
+    ...(config.budget?.contextWindowTokens ? [`Context budget: window=${config.budget.contextWindowTokens}, reserved_output=${config.budget.reservedOutputTokens ?? 0}, source=${config.budget.contextWindowSource ?? "default"}`] : []),
     ...(data.usage ? [`Usage: prompt=${data.usage.prompt_tokens ?? 0}, completion=${data.usage.completion_tokens ?? 0}, total=${data.usage.total_tokens ?? 0}`] : []),
     "",
     content,

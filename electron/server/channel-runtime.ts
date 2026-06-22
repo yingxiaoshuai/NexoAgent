@@ -3,7 +3,7 @@ import type { ChatMessage } from "../../src/shared/types";
 import { streamFromLLM } from "./agent";
 import { createSseQueue, scheduleSseCleanup } from "./sse";
 import { buildRuntimeSettings } from "./settings";
-import { getSessionsMap, saveSessionsToDisk } from "./sessions";
+import { ensureSessionsLoaded, getSessionsMap, saveSessionsToDisk } from "./sessions";
 import type { ChannelId } from "./channel-store";
 import type { Session } from "./types";
 
@@ -134,6 +134,7 @@ export function extractChannelMessage(channel: ChannelId, body: unknown): Incomi
 }
 
 export async function runChannelMessage(message: IncomingChannelMessage, getStoredApiKey: () => string): Promise<ChannelRunResult> {
+  await ensureSessionsLoaded();
   const now = new Date().toISOString();
   const sessionId = randomUUID();
   const requestId = randomUUID();
@@ -158,7 +159,7 @@ export async function runChannelMessage(message: IncomingChannelMessage, getStor
   getSessionsMap().set(sessionId, session);
   createSseQueue(requestId);
 
-  const doneEvent = await streamFromLLM(buildRuntimeSettings(), [...session.messages], requestId, getStoredApiKey());
+  const doneEvent = await streamFromLLM(buildRuntimeSettings(), session, requestId, getStoredApiKey());
   const reply = doneEvent?.content?.trim() || "已收到。";
   session.messages.push({
     id: randomUUID(),
