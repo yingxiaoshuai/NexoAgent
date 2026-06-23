@@ -18,6 +18,7 @@ import { getAllEnabledToolDefs, toLcTool } from "./tools/registry";
 import type { ChatAttachment, Session, StreamEvent, ToolDef, ToolExecutionContext } from "./types";
 import { decodeHtml, parseToolArgs, toErrorMessage } from "./utils";
 import { getWorkspaceRoot } from "./workspace";
+import { createSnapshot } from "./snapshot";
 const MISSING_PRIMARY_MODEL_MESSAGE = "No primary model is configured. Go to Settings > Models, create a model, add an API key, and mark it as Primary.";
 const MISSING_API_KEY_MESSAGE = "The current primary model does not have an API key configured. Add one in Settings > Models and try again.";
 const LOOP_GUARD_FALLBACK_MESSAGE = "\n\nThis run entered a repeated loop, so I stopped here for now. The tool results gathered so far are still available. Send \"continue\" if you want me to keep working from the current results.";
@@ -95,7 +96,7 @@ type BufferedToolCall = {
   index?: number;
 };
 
-const DSML_TAG = String.raw`(?:\|\|DSML\|\||｜｜DSML｜｜|锝滐綔DSML锝滐綔)`;
+const DSML_TAG = String.raw`(?:\|\|DSML\|\||\uFFE5\u7CEFDSML\uFFE5\u7CEF|\u95FF\u6FE1\u7CA3\u7F0D\u64E0SML\u95FF\u6FE1\u7CA3\u7F0D?)`;
 const DSML_TOOL_BLOCK_RE = new RegExp(String.raw`<\s*${DSML_TAG}tool_calls\s*>([\s\S]*?)<\/\s*${DSML_TAG}tool_calls\s*>`, "g");
 const DSML_TOOL_START_RE = new RegExp(String.raw`<\s*${DSML_TAG}tool_calls\s*>`);
 const DSML_INVOKE_RE = new RegExp(String.raw`<\s*${DSML_TAG}invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/\s*${DSML_TAG}invoke\s*>`, "g");
@@ -309,7 +310,8 @@ export async function streamFromLLM(
   session: Session,
   requestId: string,
   storedApiKey: string,
-  attachments: ChatAttachment[] = []
+  attachments: ChatAttachment[] = [],
+  turnId: string = "",
 ): Promise<Extract<StreamEvent, { type: "done" }>> {
   const messages = session.messages;
   const webSettings = getWebSettings();
@@ -459,6 +461,7 @@ export async function streamFromLLM(
       : []),
     ...conversationContext.messages,
   ];
+  let turnSnapshotCreated = false;
 
   if (primaryConfig.providerId === "anthropic-compatible") {
     try {
@@ -481,6 +484,7 @@ export async function streamFromLLM(
       }
       const doneEvent: Extract<StreamEvent, { type: "done" }> = {
         type: "done",
+        hasSnapshot: turnSnapshotCreated,
         content: result.content,
         status: "completed",
         stopReason: "completed",
@@ -500,6 +504,7 @@ export async function streamFromLLM(
     } catch (error) {
       return buildDoneEvent(requestId, {
         type: "done",
+        hasSnapshot: turnSnapshotCreated,
         content: toErrorMessage(error),
         status: "failed",
         stopReason: "runtime_error",
@@ -619,6 +624,15 @@ export async function streamFromLLM(
       });
       lcMessages.push(aiMsg);
 
+      // Create snapshot before first tool execution in this turn
+      if (!turnSnapshotCreated && turnId) {
+        const workspaceRoot = getWorkspaceRoot(settings);
+        const hasShellCmd = toolCallBuffer.some((tc) => tc.name === "shell_command");
+        if (hasShellCmd && workspaceRoot) {
+          const snapshot = await createSnapshot(session.id, turnId, workspaceRoot).catch(() => null);
+          turnSnapshotCreated = Boolean(snapshot);
+        }
+      }
       for (const tc of toolCallBuffer) {
         if (isRunInterrupted(requestId)) {
           interruptedByUser = true;
@@ -720,6 +734,7 @@ export async function streamFromLLM(
   } catch (error) {
     return buildDoneEvent(requestId, {
       type: "done",
+      hasSnapshot: turnSnapshotCreated,
       content: interruptedByUser || isRunInterrupted(requestId) ? interruptedContent(fullContent) : toErrorMessage(error),
       status: interruptedByUser || isRunInterrupted(requestId) ? "interrupted" : "failed",
       stopReason: interruptedByUser || isRunInterrupted(requestId) ? "user_interrupt" : "runtime_error",
@@ -728,6 +743,7 @@ export async function streamFromLLM(
 
   const doneEvent: Extract<StreamEvent, { type: "done" }> = {
     type: "done",
+    hasSnapshot: turnSnapshotCreated,
     content: interruptedByUser
       ? interruptedContent(fullContent)
       : fullContent || EMPTY_RESPONSE_FALLBACK_MESSAGE,

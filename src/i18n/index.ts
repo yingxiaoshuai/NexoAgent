@@ -82,6 +82,7 @@ const en = {
   done: "Done",
   interrupted: "Interrupted",
   needsInput: "Needs input",
+  undone: "Undone",
   failedExecution: "Execution failed",
   builtinTool: "Built-in tool",
   detail: "Detail",
@@ -92,6 +93,11 @@ const en = {
   more: "More",
   itemCount: "{count} items",
   browserOpen: "Open in browser",
+  undo: "Undo changes",
+  undoChanges: "Restore files to before this message",
+  confirmUndo: "Confirm undo",
+  confirmUndoDescription: "This will restore files changed by this message. Continue?",
+  undoneMessage: "This turn was undone and its file changes were restored.",
 } as const;
 
 const zh: Record<keyof typeof en, string> = {
@@ -172,6 +178,7 @@ const zh: Record<keyof typeof en, string> = {
   done: "\u5b8c\u6210",
   interrupted: "\u5df2\u4e2d\u65ad",
   needsInput: "\u9700\u8981\u7ee7\u7eed",
+  undone: "\u5df2\u64a4\u56de",
   failedExecution: "\u6267\u884c\u5931\u8d25",
   builtinTool: "\u5185\u7f6e\u5de5\u5177",
   detail: "\u8be6\u7ec6\u4fe1\u606f",
@@ -182,6 +189,11 @@ const zh: Record<keyof typeof en, string> = {
   more: "\u66f4\u591a",
   itemCount: "{count} \u6761",
   browserOpen: "\u5728\u6d4f\u89c8\u5668\u4e2d\u6253\u5f00",
+  undo: "\u64a4\u56de\u4fee\u6539",
+  undoChanges: "\u6062\u590d\u6587\u4ef6\u5230\u6b64\u6d88\u606f\u4e4b\u524d\u7684\u72b6\u6001",
+  confirmUndo: "\u786e\u8ba4\u64a4\u56de",
+  confirmUndoDescription: "\u8fd9\u4f1a\u6062\u590d\u8be5\u6761\u6d88\u606f\u5bf9\u6587\u4ef6\u505a\u7684\u4fee\u6539\uff0c\u662f\u5426\u7ee7\u7eed\uff1f",
+  undoneMessage: "\u8fd9\u4e00\u8f6e\u5bf9\u8bdd\u5df2\u64a4\u56de\uff0c\u5bf9\u5e94\u7684\u6587\u4ef6\u4fee\u6539\u5df2\u6062\u590d\u3002",
 };
 
 const translations = { zh, en } as const;

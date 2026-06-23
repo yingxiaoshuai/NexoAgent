@@ -110,7 +110,7 @@ export interface RuntimeInfo {
 }
 
 export type ChatRole = "system" | "user" | "assistant";
-export type ChatMessageStatus = "sending" | "completed" | "interrupted" | "needs_input" | "failed";
+export type ChatMessageStatus = "sending" | "completed" | "interrupted" | "needs_input" | "failed" | "undone";
 export type TurnCompletionStatus = Exclude<ChatMessageStatus, "sending">;
 
 export interface Attachment {
@@ -129,6 +129,10 @@ export interface ChatMessage {
   createdAt: string;
   status?: ChatMessageStatus;
   attachments?: Attachment[];
+  meta?: {
+    undoneAt?: string;
+    undoneMessage?: string;
+  };
 }
 
 export interface ToolCapability {

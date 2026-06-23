@@ -1,4 +1,4 @@
-import type { AgentSettings, ChatMessage, ModelCapability, TurnCompletionStatus } from "../../src/shared/types";
+﻿import type { AgentSettings, ChatMessage, ModelCapability, TurnCompletionStatus } from "../../src/shared/types";
 
 export type TurnStopReason =
   | "completed"
@@ -18,6 +18,7 @@ export type StreamEvent =
       status: TurnCompletionStatus;
       usage?: { promptTokens?: number; completionTokens?: number };
       stopReason?: TurnStopReason;
+      hasSnapshot?: boolean;
       circuitBreaker?: {
         reason: string;
         detail: string;

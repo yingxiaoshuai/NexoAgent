@@ -75,3 +75,4 @@ export const MEMORY_DB_FILE = path.join(DATA_DIR, "memory.sqlite");
 export const MEMORY_JSON_FILE = path.join(DATA_DIR, "memory.json");
 export const MEMORY_MD_FILE = path.join(DATA_DIR, "MEMORY.md");
 export const CHROMA_DIR = path.join(DATA_DIR, "chroma");
+export const SNAPSHOTS_DIR = path.join(DATA_DIR, "snapshots");

@@ -1,9 +1,9 @@
-import React, { useMemo } from "react";
+﻿import React, { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { Avatar, Tag } from "antd";
-import { FileOutlined, RobotOutlined, SoundOutlined, UserOutlined } from "@ant-design/icons";
+import { Avatar, Button, Popconfirm, Tag, Tooltip } from "antd";
+import { FileOutlined, RobotOutlined, SoundOutlined, UndoOutlined, UserOutlined } from "@ant-design/icons";
 import type { ChatMessage } from "../../shared/types";
 import { ToolCallItem } from "./ToolCallSteps";
 import type { ToolCallEvent } from "./ToolCallSteps";
@@ -19,6 +19,8 @@ interface Props {
   toolCalls?: ToolCallEvent[];
   blocks?: MessageBlock[];
   attachments?: ChatMessage["attachments"];
+  undoable?: boolean;
+  onUndo?: () => void;
 }
 
 const STREAM_CURSOR = "|";
@@ -89,6 +91,8 @@ function extractUploadArtifacts(content: string) {
 
 function getMessageStatusMeta(status: ChatMessage["status"], t: ReturnType<typeof useI18n>["t"]) {
   switch (status) {
+    case "undone":
+      return { color: "default" as const, label: t("undone") };
     case "failed":
       return { color: "error" as const, label: t("failedExecution") };
     case "interrupted":
@@ -100,7 +104,7 @@ function getMessageStatusMeta(status: ChatMessage["status"], t: ReturnType<typeo
   }
 }
 
-export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, blocks }) => {
+export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, blocks, undoable, onUndo }) => {
   const { colors } = useTheme();
   const { t } = useI18n();
   const isUser = message.role === "user";
@@ -110,6 +114,7 @@ export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, 
   const safeContent = !isUser ? stripDsmlArtifacts(message.content) : message.content;
   const generatedArtifacts = !isUser ? extractUploadArtifacts(safeContent) : [];
   const statusMeta = !isUser ? getMessageStatusMeta(message.status, t) : null;
+  const isUndone = message.status === "undone";
 
   return (
     <div
@@ -178,12 +183,13 @@ export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, 
         )}
         <div
           style={{
-            background: isUser ? colors.bubbleUser : colors.bubbleAssistant,
-            color: isUser ? "#ffffff" : colors.textPrimary,
-            border: isUser ? "none" : `1px solid ${colors.border}`,
+            background: isUndone ? colors.bgTertiary : (isUser ? colors.bubbleUser : colors.bubbleAssistant),
+            color: isUndone ? colors.textMuted : (isUser ? "#ffffff" : colors.textPrimary),
+            border: isUser ? "none" : `1px solid ${isUndone ? colors.borderStrong : colors.border}`,
             borderRadius: isUser ? "16px 4px 16px 16px" : "4px 16px 16px 16px",
             padding: "10px 14px",
             wordBreak: "break-word",
+            opacity: isUndone ? 0.72 : 1,
           }}
         >
           {isUser ? (
@@ -246,7 +252,36 @@ export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, 
             )}
           </div>
         ) : null}
-        {statusMeta ? <Tag color={statusMeta.color} style={{ marginTop: 4 }}>{statusMeta.label}</Tag> : null}
+        <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          {statusMeta ? <Tag color={statusMeta.color}>{statusMeta.label}</Tag> : null}
+          {!isUser && isUndone && message.meta?.undoneMessage ? (
+            <span style={{ color: colors.textMuted, fontSize: 12 }}>
+              {message.meta.undoneMessage === "This turn was undone and its file changes were restored."
+                ? t("undoneMessage")
+                : message.meta.undoneMessage}
+            </span>
+          ) : null}
+          {!isUser && !isUndone && undoable && onUndo ? (
+            <Popconfirm
+              title={t("confirmUndo")}
+              description={t("confirmUndoDescription")}
+              okText={t("confirm")}
+              cancelText={t("cancel")}
+              onConfirm={onUndo}
+            >
+              <Tooltip title={t("undoChanges")}>
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<UndoOutlined />}
+                  style={{ color: colors.textMuted, paddingInline: 6 }}
+                >
+                  {t("undo")}
+                </Button>
+              </Tooltip>
+            </Popconfirm>
+          ) : null}
+        </div>
       </div>
     </div>
   );

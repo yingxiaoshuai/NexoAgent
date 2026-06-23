@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
+import { message as antdMessage } from "antd";
 import type { AgentSettings, Attachment as ChatAttachment, ChatMessage } from "../shared/types";
 import { apiDelete, apiGet, apiPatch, apiPost, getRuntimeApiBase, setRuntimeApiBase, subscribeStream } from "../services/api";
 import { sanitizeApiKeyForSave } from "../shared/settings";
@@ -34,6 +35,7 @@ interface ChatStore {
   messages: ChatMessage[];
   toolCalls: MessageToolCalls;
   messageBlocks: MessageBlocks;
+  undoableMessageIds: Set<string>;
   streaming: boolean;
   settings: AgentSettings;
   ensureRuntimeReady: () => Promise<void>;
@@ -44,8 +46,21 @@ interface ChatStore {
   renameSession: (id: string, title: string) => Promise<void>;
   sendMessage: (content: string, attachments?: Attachment[]) => Promise<void>;
   cancelStream: () => void;
+  undoAssistantMessage: (messageId: string) => Promise<void>;
   loadSettings: () => Promise<void>;
   saveSettings: (partial: Partial<AgentSettings>) => Promise<void>;
+}
+
+function replaceMessageId(messages: ChatMessage[], fromId: string, toId: string) {
+  return messages.map((message) => (message.id === fromId ? { ...message, id: toId } : message));
+}
+
+function replaceMessageBlockKey<T>(record: Record<string, T>, fromId: string, toId: string) {
+  if (!(fromId in record)) return record;
+  const next = { ...record } as Record<string, T>;
+  next[toId] = next[fromId];
+  delete next[fromId];
+  return next;
 }
 
 const defaultSettings: AgentSettings = {
@@ -167,9 +182,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
     messages: [],
     toolCalls: {},
     messageBlocks: {},
+    undoableMessageIds: new Set(),
     streaming: false,
     settings: defaultSettings,
     cancelStream: () => {},
+    undoAssistantMessage: async (messageId) => {
+      const activeSessionId = get().activeSessionId;
+      if (!activeSessionId || !messageId) return;
+      try {
+        const result = await apiPost<{ ok: boolean; restoredCount?: number; reason?: string; message?: string; turnId?: string }>(
+          `/api/chat/${activeSessionId}/undo`,
+          { messageId }
+        );
+        if (result.ok) {
+          set((state) => {
+            const next = new Set(state.undoableMessageIds);
+            next.delete(messageId);
+            if (result.turnId) next.delete(result.turnId);
+            return { undoableMessageIds: next };
+          });
+          await get().selectSession(activeSessionId);
+          void antdMessage.success(`已撤回 ${result.restoredCount ?? 0} 个文件`);
+        } else {
+          void antdMessage.error(result.message || "撤回失败");
+        }
+      } catch (err) {
+        void antdMessage.error(err instanceof Error ? err.message : "撤回失败");
+      }
+    },
     ensureRuntimeReady,
 
     loadSessions: async () => {
@@ -187,13 +227,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
         messages: [],
         toolCalls: {},
         messageBlocks: {},
+    undoableMessageIds: new Set(),
       }));
     },
 
     selectSession: async (id) => {
       await ensureRuntimeReady();
       const messages = await apiGet<ChatMessage[]>(`/api/sessions/${id}/messages`);
-      set({ activeSessionId: id, messages, toolCalls: {}, messageBlocks: {} });
+      set({ activeSessionId: id, messages, toolCalls: {}, messageBlocks: {}, undoableMessageIds: new Set() });
     },
 
     deleteSession: async (id) => {
@@ -208,6 +249,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         messages: newActive === activeSessionId ? get().messages : [],
         toolCalls: {},
         messageBlocks: {},
+    undoableMessageIds: new Set(),
       });
       if (newActive && newActive !== activeSessionId) {
         await get().selectSession(newActive);
@@ -247,14 +289,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set((state) => ({ messages: [...state.messages, userMessage, assistantMessage], streaming: true }));
 
       let requestId: string;
+      let serverTurnId = assistantId;
       try {
-        const response = await apiPost<{ requestId: string }>("/api/chat", {
+        const response = await apiPost<{ requestId: string; turnId?: string }>("/api/chat", {
           sessionId: activeSessionId,
           message: content,
           settings,
           attachments: attachments || [],
         });
         requestId = response.requestId;
+        if (response.turnId && response.turnId !== assistantId) {
+          serverTurnId = response.turnId;
+          set((state) => ({
+            messages: replaceMessageId(state.messages, assistantId, response.turnId!),
+            toolCalls: replaceMessageBlockKey(state.toolCalls, assistantId, response.turnId!),
+            messageBlocks: replaceMessageBlockKey(state.messageBlocks, assistantId, response.turnId!),
+            undoableMessageIds: state.undoableMessageIds.has(assistantId)
+              ? new Set([...state.undoableMessageIds].map((id) => (id === assistantId ? response.turnId! : id)))
+              : state.undoableMessageIds,
+          }));
+        }
       } catch (error) {
         set((state) => ({
           streaming: false,
@@ -273,7 +327,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const appendToken = (token: string) => {
         full += token;
         set((state) => {
-          const blocks = [...(state.messageBlocks[assistantId] ?? [])];
+          const blocks = [...(state.messageBlocks[serverTurnId] ?? [])];
           const last = blocks[blocks.length - 1];
           if (last?.type === "text") {
             blocks[blocks.length - 1] = { type: "text", content: last.content + token };
@@ -281,8 +335,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
             blocks.push({ type: "text", content: token });
           }
           return {
-            messages: state.messages.map((message) => (message.id === assistantId ? { ...message, content: full } : message)),
-            messageBlocks: { ...state.messageBlocks, [assistantId]: blocks },
+            messages: state.messages.map((message) => (message.id === serverTurnId ? { ...message, content: full } : message)),
+            messageBlocks: { ...state.messageBlocks, [serverTurnId]: blocks },
           };
         });
       };
@@ -304,11 +358,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           set((state) => ({
             toolCalls: {
               ...state.toolCalls,
-              [assistantId]: [...(state.toolCalls[assistantId] ?? []), toolCall],
+              [serverTurnId]: [...(state.toolCalls[serverTurnId] ?? []), toolCall],
             },
             messageBlocks: {
               ...state.messageBlocks,
-              [assistantId]: [...(state.messageBlocks[assistantId] ?? []), { type: "tool", id: toolCall.id }],
+              [serverTurnId]: [...(state.messageBlocks[serverTurnId] ?? []), { type: "tool", id: toolCall.id }],
             },
           }));
           return;
@@ -323,7 +377,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
           set((state) => ({
             toolCalls: {
               ...state.toolCalls,
-              [assistantId]: (state.toolCalls[assistantId] ?? []).map((toolCall) =>
+              [serverTurnId]: (state.toolCalls[serverTurnId] ?? []).map((toolCall) =>
                 toolCall.id === event.id
                   ? { ...toolCall, output, elapsed, status: isError ? "error" : "done" }
                   : toolCall
@@ -339,9 +393,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
             streaming: false,
             cancelStream: () => {},
             messages: state.messages.map((message) =>
-              message.id === assistantId ? { ...message, content: full || (event.content as string), status } : message
+              message.id === serverTurnId ? { ...message, content: full || (event.content as string), status } : message
             ),
           }));
+          const snap = (event as any).hasSnapshot;
+          if (snap) {
+            set((state) => ({
+              undoableMessageIds: new Set([...state.undoableMessageIds, serverTurnId]),
+            }));
+          }
           void get().loadSessions();
           cancel();
           return;
@@ -352,7 +412,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             streaming: false,
             cancelStream: () => {},
             messages: state.messages.map((message) =>
-              message.id === assistantId
+              message.id === serverTurnId
                 ? { ...message, content: formatAssistantError(String(event.message ?? "")), status: "failed" }
                 : message
             ),
@@ -369,7 +429,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
             streaming: false,
             cancelStream: () => {},
             messages: state.messages.map((message) =>
-              message.id === assistantId && message.status === "sending"
+              message.id === serverTurnId && message.status === "sending"
                 ? { ...message, content: message.content || "\u5df2\u505c\u6b62\u5f53\u524d\u8fd0\u884c\u3002", status: "interrupted" }
                 : message
             ),

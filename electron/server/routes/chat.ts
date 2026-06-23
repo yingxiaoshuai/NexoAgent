@@ -2,12 +2,17 @@ import type { Application } from "express";
 import { randomUUID } from "node:crypto";
 import type { AgentSettings } from "../../../src/shared/types";
 import { extractMemoryAfterChat, streamFromLLM } from "../agent";
+import { getLatestSnapshotTurnId, getSnapshotMeta, restoreSnapshot } from "../snapshot";
 import { clearRun, interruptRun, registerRun } from "../run-control";
 import { buildRuntimeSettings } from "../settings";
-import { ensureSessionsLoaded, saveSessionsToDisk, getSessionsMap } from "../sessions";
+import { ensureSessionsLoaded, getSessionsMap, saveSessionsToDisk } from "../sessions";
 import { createSseQueue, pushEvent, scheduleSseCleanup } from "../sse";
 import type { ChatAttachment } from "../types";
 import type { ServerContext } from "./context";
+
+function findAssistantMessageIndexById(messages: Array<{ id: string; role: string }>, messageId: string) {
+  return messages.findIndex((message) => message.role === "assistant" && message.id === messageId);
+}
 
 export function registerChatRoutes(app: Application, ctx: ServerContext) {
   app.post("/api/chat/:requestId/interrupt", async (req, res) => {
@@ -25,11 +30,11 @@ export function registerChatRoutes(app: Application, ctx: ServerContext) {
     };
     const messageAttachments = attachments ?? [];
 
-    let s = getSessionsMap().get(sessionId);
-    if (!s) {
+    let session = getSessionsMap().get(sessionId);
+    if (!session) {
       const now = new Date().toISOString();
-      s = { id: sessionId, title: "New Chat", messages: [], createdAt: now, updatedAt: now };
-      getSessionsMap().set(sessionId, s);
+      session = { id: sessionId, title: "New Chat", messages: [], createdAt: now, updatedAt: now };
+      getSessionsMap().set(sessionId, session);
     }
 
     const userMsg = {
@@ -40,22 +45,23 @@ export function registerChatRoutes(app: Application, ctx: ServerContext) {
       status: "completed" as const,
       attachments: messageAttachments,
     };
-    s.messages.push(userMsg);
-    if (s.messages.filter((m) => m.role === "user").length === 1) {
-      s.title = message.slice(0, 40) + (message.length > 40 ? "..." : "");
+    session.messages.push(userMsg);
+    if (session.messages.filter((item) => item.role === "user").length === 1) {
+      session.title = message.slice(0, 40) + (message.length > 40 ? "..." : "");
     }
 
     const requestId = randomUUID();
+    const turnId = randomUUID();
     registerRun(requestId);
     createSseQueue(requestId);
-    const sessionRef = s;
 
     const runtimeSettings = buildRuntimeSettings(settings ?? {});
+    const sessionRef = session;
 
-    void streamFromLLM(runtimeSettings, sessionRef, requestId, ctx.getStoredApiKey(), messageAttachments)
+    void streamFromLLM(runtimeSettings, sessionRef, requestId, ctx.getStoredApiKey(), messageAttachments, turnId)
       .then(async (doneEvent) => {
         sessionRef.messages.push({
-          id: randomUUID(),
+          id: turnId,
           role: "assistant",
           content: doneEvent.content,
           createdAt: new Date().toISOString(),
@@ -77,7 +83,7 @@ export function registerChatRoutes(app: Application, ctx: ServerContext) {
           stopReason: "runtime_error",
         });
         sessionRef.messages.push({
-          id: randomUUID(),
+          id: turnId,
           role: "assistant",
           content,
           createdAt: new Date().toISOString(),
@@ -91,6 +97,71 @@ export function registerChatRoutes(app: Application, ctx: ServerContext) {
         scheduleSseCleanup(requestId);
       });
 
-    res.json({ requestId, userMessageId: userMsg.id });
+    res.json({ requestId, userMessageId: userMsg.id, turnId });
+  });
+
+  app.post("/api/chat/:sessionId/undo", async (req, res) => {
+    await ensureSessionsLoaded();
+    const { sessionId } = req.params;
+    const { messageId } = req.body as { messageId?: string };
+    const session = getSessionsMap().get(sessionId);
+    if (!session) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    const targetTurnId = typeof messageId === "string" && messageId.trim()
+      ? messageId.trim()
+      : await getLatestSnapshotTurnId(sessionId);
+
+    if (!targetTurnId) {
+      res.json({ ok: false, reason: "no_snapshot" });
+      return;
+    }
+
+    const meta = await getSnapshotMeta(sessionId, targetTurnId);
+    if (!meta) {
+      res.json({ ok: false, reason: "no_snapshot" });
+      return;
+    }
+
+    const assistantIdx = findAssistantMessageIndexById(session.messages, targetTurnId);
+    if (assistantIdx === -1) {
+      res.json({ ok: false, reason: "message_not_found" });
+      return;
+    }
+
+    try {
+      const result = await restoreSnapshot(sessionId, targetTurnId, meta.workspaceRoot);
+      const undoneAt = new Date().toISOString();
+      const undoneMessage = "This turn was undone and its file changes were restored.";
+      const relatedIndexes = assistantIdx > 0 && session.messages[assistantIdx - 1]?.role === "user"
+        ? [assistantIdx - 1, assistantIdx]
+        : [assistantIdx];
+
+      for (const index of relatedIndexes) {
+        const message = session.messages[index];
+        if (!message) continue;
+        session.messages[index] = {
+          ...message,
+          status: "undone",
+          meta: {
+            ...(message.meta ?? {}),
+            undoneAt,
+            undoneMessage,
+          },
+        };
+      }
+
+      session.updatedAt = new Date().toISOString();
+      await saveSessionsToDisk();
+      res.json({ ok: true, restoredCount: result.restoredCount, turnId: targetTurnId });
+    } catch (error) {
+      if (error instanceof Error && error.message === "no_snapshot") {
+        res.json({ ok: false, reason: "no_snapshot" });
+        return;
+      }
+      res.json({ ok: false, reason: "restore_failed", message: error instanceof Error ? error.message : String(error) });
+    }
   });
 }

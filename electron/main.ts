@@ -6,6 +6,7 @@ import net from "node:net";
 import { createExpressApp } from "./server/index";
 import { applyAgentSettings } from "./server/settings";
 import { DATA_DIR, SETTINGS_FILE } from "./server/config";
+import { cleanupOldSnapshots } from "./server/snapshot";
 import {
   getDefaultServiceProviderName,
   getProviderDefaultApiBase,
@@ -428,6 +429,7 @@ if (gotSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     await startHttpServer();
+    void cleanupOldSnapshots();
     registerDesktopShortcuts();
     if (process.platform === "darwin" && app.dock) {
       app.dock.setIcon(appAssetPath("nexoagent-icon.png"));

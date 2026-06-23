@@ -10,7 +10,7 @@ interface Props {
 }
 
 export const MessageList: React.FC<Props> = ({ onSuggest, hasInput }) => {
-  const { messages, streaming, toolCalls, messageBlocks } = useChatStore();
+  const { messages, streaming, toolCalls, messageBlocks, undoableMessageIds, undoAssistantMessage } = useChatStore();
   const { colors } = useTheme();
   const { t } = useI18n();
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -72,7 +72,9 @@ export const MessageList: React.FC<Props> = ({ onSuggest, hasInput }) => {
 
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
-      {messages.map((message, index) => (
+      {messages.map((message, index) => {
+        const undoable = undoableMessageIds.has(message.id);
+        return (
         <MessageBubble
           key={message.id}
           message={message}
@@ -80,8 +82,10 @@ export const MessageList: React.FC<Props> = ({ onSuggest, hasInput }) => {
           streaming={streaming && index === messages.length - 1 && message.role === "assistant"}
           toolCalls={toolCalls[message.id]}
           blocks={messageBlocks[message.id]}
-        />
-      ))}
+          undoable={undoable}
+          onUndo={undoable ? () => undoAssistantMessage(message.id) : undefined}
+        />)}
+      )}
       <div ref={bottomRef} />
     </div>
   );
