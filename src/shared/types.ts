@@ -5,6 +5,7 @@ export type ProviderId =
   | "anthropic-compatible";
 
 export type PlanningMode = "fast" | "balanced" | "deep";
+export type ThinkingEffort = "high" | "max";
 
 export type ModelContextSource =
   | "user"
@@ -81,6 +82,8 @@ export interface AgentSettings extends ModelContextBudget {
   /** Default timeout for shell_command when timeoutMs is omitted (ms). */
   shellCommandTimeoutMs: number;
   planningMode: PlanningMode;
+  thinkingEnabled: boolean;
+  thinkingEffort: ThinkingEffort;
   circuitBreakerEnabled: boolean;
   circuitBreakerConsecutiveFailureLimit: number;
   circuitBreakerRepeatedToolCallLimit: number;
@@ -90,7 +93,7 @@ export interface AgentSettings extends ModelContextBudget {
   enableMemory: boolean;
   enableKnowledge: boolean;
   workspacePath: string;
-  /** Extra directories file_read/file_write may access (absolute paths). */
+  /** Extra directories used for workspace path resolution and shell cwd selection (absolute paths). */
   fileAccessRoots?: string[];
   webHost: string;
   webPort: number;
@@ -149,6 +152,8 @@ export interface ModelProfile extends ModelContextBudget {
   capabilities?: ModelCapability[];
   isPrimary?: boolean;
   temperature?: number;
+  thinkingEnabled?: boolean;
+  thinkingEffort?: ThinkingEffort;
   description?: string;
   enabled: boolean;
 }

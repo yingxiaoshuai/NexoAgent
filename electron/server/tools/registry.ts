@@ -24,13 +24,9 @@ let toolDefs: ToolDef[] = [];
 let toolMap = new Map<string, ToolDef>();
 const enabledTools = new Set<string>();
 
-const TOOL_SETTINGS_VERSION = 7;
+const TOOL_SETTINGS_VERSION = 9;
 const DEFAULT_TOOL_MIGRATIONS: Record<number, string[]> = {
-  3: ["search_skills", "create_skill"],
-  4: ["install_skill"],
-  5: ["shell_command"],
-  6: ["create_scheduled_task"],
-  7: ["analyze_image", "generate_image", "edit_image", "transcribe_audio", "synthesize_speech"],
+  9: ["shell_command", "invoke_model", "recall_memory"],
 };
 
 async function loadBundledToolsFile() {
@@ -66,8 +62,10 @@ export async function loadToolSettings() {
     const names = Array.isArray(parsed) ? parsed : Array.isArray(parsed.enabled) ? parsed.enabled : [];
     const settingsVersion = Array.isArray(parsed) ? 1 : typeof parsed.version === "number" ? parsed.version : 1;
     enabledTools.clear();
+    let normalized = false;
     for (const name of names) {
       if (toolMap.has(name)) enabledTools.add(name);
+      else normalized = true;
     }
 
     let migrated = false;
@@ -82,7 +80,7 @@ export async function loadToolSettings() {
       }
     }
 
-    if (migrated || settingsVersion < TOOL_SETTINGS_VERSION) {
+    if (normalized || migrated || settingsVersion < TOOL_SETTINGS_VERSION) {
       await saveToolSettings();
     }
   } catch {

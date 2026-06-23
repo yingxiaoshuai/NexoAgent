@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { CheckCircleOutlined, CloseCircleOutlined, LoadingOutlined, RightOutlined, ToolOutlined } from "@ant-design/icons";
 import { Tag } from "antd";
+import { useI18n } from "../../i18n";
 import { useTheme } from "../../theme";
 
 export interface ToolCallEvent {
@@ -11,18 +12,6 @@ export interface ToolCallEvent {
   elapsed?: number;
   status: "running" | "done" | "error";
 }
-
-const UI = {
-  running: "\u6267\u884c\u4e2d",
-  failed: "\u5931\u8d25",
-  done: "\u5b8c\u6210",
-  builtinTool: "\u5185\u7f6e\u5de5\u5177",
-  detail: "\u8be6\u7ec6\u4fe1\u606f",
-  title: "\u5de5\u5177\u6807\u8bc6",
-  inputSummary: "\u8f93\u5165\u6458\u8981",
-  rawInput: "\u539f\u59cb\u8f93\u5165",
-  rawOutput: "\u539f\u59cb\u8f93\u51fa",
-} as const;
 
 function parseToolName(name: string) {
   if (!name.startsWith("mcp__")) {
@@ -106,37 +95,37 @@ function summarizeInput(input: unknown) {
   }
 }
 
-function getStatusMeta(status: ToolCallEvent["status"]) {
-  switch (status) {
-    case "running":
-      return {
-        icon: <LoadingOutlined style={{ color: "#f59e0b", fontSize: 12 }} />,
-        color: "#fbbf24",
-        label: UI.running,
-      };
-    case "error":
-      return {
-        icon: <CloseCircleOutlined style={{ color: "#ef4444", fontSize: 12 }} />,
-        color: "#f87171",
-        label: UI.failed,
-      };
-    case "done":
-    default:
-      return {
-        icon: <CheckCircleOutlined style={{ color: "#22c55e", fontSize: 12 }} />,
-        color: "#4ade80",
-        label: UI.done,
-      };
-  }
-}
-
 export const ToolCallItem: React.FC<{ call: ToolCallEvent }> = ({ call }) => {
   const [open, setOpen] = useState(false);
   const { colors } = useTheme();
+  const { t } = useI18n();
   const parsed = useMemo(() => parseToolName(call.name), [call.name]);
-  const statusMeta = getStatusMeta(call.status);
   const summary = summarizeOutput(call.output);
   const inputSummary = summarizeInput(call.input);
+
+  const statusMeta = useMemo(() => {
+    switch (call.status) {
+      case "running":
+        return {
+          icon: <LoadingOutlined style={{ color: "#f59e0b", fontSize: 12 }} />,
+          color: "#fbbf24",
+          label: t("running"),
+        };
+      case "error":
+        return {
+          icon: <CloseCircleOutlined style={{ color: "#ef4444", fontSize: 12 }} />,
+          color: "#f87171",
+          label: t("failedExecution"),
+        };
+      case "done":
+      default:
+        return {
+          icon: <CheckCircleOutlined style={{ color: "#22c55e", fontSize: 12 }} />,
+          color: "#4ade80",
+          label: t("done"),
+        };
+    }
+  }, [call.status, t]);
 
   if (isTrivialShellCommandResult(call) || (call.name === "shell_command" && isTrivialShellCommandSummary(summary))) {
     return null;
@@ -171,7 +160,7 @@ export const ToolCallItem: React.FC<{ call: ToolCallEvent }> = ({ call }) => {
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span style={{ color: statusMeta.color, fontSize: 13, fontWeight: 600 }}>{parsed.displayName}</span>
               <Tag color={parsed.isMcp ? "geekblue" : "default"} icon={parsed.isMcp ? <ToolOutlined /> : undefined}>
-                {parsed.isMcp ? parsed.provider : UI.builtinTool}
+                {parsed.isMcp ? parsed.provider : t("builtinTool")}
               </Tag>
               <Tag color={call.status === "error" ? "error" : call.status === "running" ? "gold" : "green"}>
                 {statusMeta.label}
@@ -195,7 +184,7 @@ export const ToolCallItem: React.FC<{ call: ToolCallEvent }> = ({ call }) => {
         <div style={{ borderTop: `1px solid ${colors.border}`, padding: 12 }}>
           {parsed.title !== parsed.displayName ? (
             <>
-              <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>{UI.title}</div>
+              <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>{t("title")}</div>
               <pre
                 style={{
                   background: colors.bgSecondary,
@@ -214,7 +203,7 @@ export const ToolCallItem: React.FC<{ call: ToolCallEvent }> = ({ call }) => {
           ) : null}
           {summary ? (
             <>
-              <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>{UI.detail}</div>
+              <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>{t("detail")}</div>
               <pre
                 style={{
                   background: colors.bgSecondary,
@@ -231,7 +220,7 @@ export const ToolCallItem: React.FC<{ call: ToolCallEvent }> = ({ call }) => {
               </pre>
             </>
           ) : null}
-          <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>{UI.inputSummary}</div>
+          <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>{t("inputSummary")}</div>
           <pre
             style={{
               background: colors.bgSecondary,
@@ -246,7 +235,7 @@ export const ToolCallItem: React.FC<{ call: ToolCallEvent }> = ({ call }) => {
           >
             {inputSummary}
           </pre>
-          <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>{UI.rawInput}</div>
+          <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>{t("rawInput")}</div>
           <pre
             style={{
               background: colors.bgSecondary,
@@ -262,7 +251,7 @@ export const ToolCallItem: React.FC<{ call: ToolCallEvent }> = ({ call }) => {
           </pre>
           {call.output !== undefined ? (
             <>
-              <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>{UI.rawOutput}</div>
+              <div style={{ color: colors.textMuted, fontSize: 12, marginBottom: 6 }}>{t("rawOutput")}</div>
               <pre
                 style={{
                   background: colors.bgSecondary,

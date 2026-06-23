@@ -8,12 +8,13 @@ import { OpenAIEmbeddings } from "@langchain/openai";
 import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage } from "@langchain/core/messages";
 import { ChromaClient, type Collection, type Metadata, type Where } from "chromadb";
-
-const DATA_DIR = path.join(process.cwd(), ".nexo-data");
-const MEMORY_DB_FILE = path.join(DATA_DIR, "memory.sqlite");
-const MEMORY_JSON_FILE = path.join(DATA_DIR, "memory.json");
-const CHROMA_DIR = path.join(DATA_DIR, "chroma");
-const MEMORY_MD = path.join(DATA_DIR, "MEMORY.md");
+import {
+  CHROMA_DIR,
+  DATA_DIR,
+  MEMORY_DB_FILE,
+  MEMORY_JSON_FILE,
+  MEMORY_MD_FILE,
+} from "./server/config";
 const MEMORY_SCHEMA_VERSION = 2;
 const CHROMA_COLLECTION = "nexo_memories";
 const DREAM_DEBOUNCE_MS = 1200;
@@ -368,7 +369,7 @@ async function writeMemoryMarkdown() {
       lines.push("");
     }
   }
-  await fs.writeFile(MEMORY_MD, lines.join("\n"), "utf8");
+  await fs.writeFile(MEMORY_MD_FILE, lines.join("\n"), "utf8");
 }
 
 function buildEmbeddings(apiKey: string, apiBase: string) {

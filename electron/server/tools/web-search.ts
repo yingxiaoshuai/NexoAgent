@@ -9,7 +9,19 @@ function queryTokens(query: string) {
 }
 
 function isRelevantSearchResult(query: string, result: SearchResult) {
-  const tokens = queryTokens(query).filter((token) => !["最新", "行情", "股票", "搜索", "2025", "2026"].includes(token));
+  const tokens = queryTokens(query).filter((token) => ![
+    "latest",
+    "news",
+    "price",
+    "stock",
+    "search",
+    "\u6700\u65b0",
+    "\u884c\u60c5",
+    "\u80a1\u7968",
+    "\u641c\u7d22",
+    "2025",
+    "2026",
+  ].includes(token));
   if (!tokens.length) return true;
   const haystack = `${result.title}\n${result.url}\n${result.snippet}`.toLowerCase();
   return tokens.some((token) => haystack.includes(token));
@@ -21,8 +33,8 @@ function formatSearchResults(results: SearchResult[], source: string) {
   }
   return [
     `Source: ${source}`,
-    ...results.slice(0, DEFAULT_SEARCH_RESULT_COUNT).map((r, i) =>
-      `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet || "(no snippet)"}`
+    ...results.slice(0, DEFAULT_SEARCH_RESULT_COUNT).map((result, index) =>
+      `${index + 1}. ${result.title}\n   ${result.url}\n   ${result.snippet || "(no snippet)"}`,
     ),
   ].join("\n");
 }

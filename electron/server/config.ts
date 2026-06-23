@@ -6,47 +6,41 @@ function uniquePaths(paths: string[]) {
   return [...new Set(paths.map((value) => path.resolve(value)))];
 }
 
-function scoreDataDir(dir: string) {
-  const markers = [
-    "sessions.json",
-    "memory.sqlite",
-    "skills.json",
-    "tasks.json",
-    "model-profiles.json",
-  ];
-  return markers.reduce((score, file) => (
-    score + (fs.existsSync(path.join(dir, file)) ? 1 : 0)
-  ), 0);
+function legacyDataDirCandidates() {
+  const legacyAppDataDir = process.env.APPDATA
+    ? path.join(process.env.APPDATA, "nexo-agent", ".nexo-data")
+    : path.join(os.homedir(), ".nexo-agent", ".nexo-data");
+  return uniquePaths([
+    path.join(process.cwd(), ".nexo-data"),
+    path.resolve(__dirname, "..", "..", ".nexo-data"),
+    path.resolve(__dirname, "..", "..", "..", ".nexo-data"),
+    legacyAppDataDir,
+  ]);
 }
 
-function hasDirectoryContents(dir: string) {
-  try {
-    return fs.readdirSync(dir).length > 0;
-  } catch {
-    return false;
-  }
+export function getDefaultDataDir() {
+  return path.join(os.homedir(), ".NexoAgent");
 }
 
-function pickBestLegacyDir(candidates: string[]) {
-  const ranked = candidates
-    .map((dir) => ({ dir, score: scoreDataDir(dir) }))
-    .filter((entry) => entry.score > 0)
-    .sort((left, right) => right.score - left.score);
-
-  return ranked[0]?.dir ?? "";
-}
-
-function copyLegacyDataDir(sourceDir: string, targetDir: string) {
+function mergeLegacyDataDirs(targetDir: string) {
   try {
     fs.mkdirSync(targetDir, { recursive: true });
-    fs.cpSync(sourceDir, targetDir, {
-      recursive: true,
-      force: false,
-      errorOnExist: false,
-    });
-    return true;
   } catch {
-    return false;
+    return;
+  }
+
+  for (const legacyDir of legacyDataDirCandidates()) {
+    if (path.resolve(legacyDir) === path.resolve(targetDir)) continue;
+    if (!fs.existsSync(legacyDir)) continue;
+    try {
+      fs.cpSync(legacyDir, targetDir, {
+        recursive: true,
+        force: false,
+        errorOnExist: false,
+      });
+    } catch {
+      // Best-effort migration; ~/.NexoAgent remains the canonical location.
+    }
   }
 }
 
@@ -56,30 +50,9 @@ function resolveDataDir() {
     return path.resolve(envDir);
   }
 
-  const preferredUserDir = path.join(os.homedir(), ".NexoAgent");
-  const legacyAppDataDir = process.env.APPDATA
-    ? path.join(process.env.APPDATA, "nexo-agent", ".nexo-data")
-    : path.join(os.homedir(), ".nexo-agent", ".nexo-data");
-  const legacyCandidates = uniquePaths([
-    path.join(process.cwd(), ".nexo-data"),
-    path.resolve(__dirname, "..", "..", ".nexo-data"),
-    path.resolve(__dirname, "..", "..", "..", ".nexo-data"),
-    legacyAppDataDir,
-  ]);
-
-  if (scoreDataDir(preferredUserDir) > 0 || hasDirectoryContents(preferredUserDir)) {
-    return preferredUserDir;
-  }
-
-  const legacyDir = pickBestLegacyDir(legacyCandidates);
-  if (legacyDir) {
-    if (copyLegacyDataDir(legacyDir, preferredUserDir)) {
-      return preferredUserDir;
-    }
-    return legacyDir;
-  }
-
-  return preferredUserDir;
+  const dataDir = getDefaultDataDir();
+  mergeLegacyDataDirs(dataDir);
+  return dataDir;
 }
 
 export const DATA_DIR = resolveDataDir();
@@ -97,3 +70,8 @@ export const MANAGED_SKILLS_DIR = path.join(DATA_DIR, "skills");
 export const MANAGED_CUSTOM_SKILLS_DIR = path.join(MANAGED_SKILLS_DIR, "custom");
 export const MANAGED_MARKETPLACE_SKILLS_DIR = path.join(MANAGED_SKILLS_DIR, "marketplace");
 export const TASKS_FILE = path.join(DATA_DIR, "tasks.json");
+export const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
+export const MEMORY_DB_FILE = path.join(DATA_DIR, "memory.sqlite");
+export const MEMORY_JSON_FILE = path.join(DATA_DIR, "memory.json");
+export const MEMORY_MD_FILE = path.join(DATA_DIR, "MEMORY.md");
+export const CHROMA_DIR = path.join(DATA_DIR, "chroma");

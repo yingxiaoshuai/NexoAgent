@@ -1,4 +1,4 @@
-import { ChatOpenAI } from "@langchain/openai";
+import { ChatOpenAI, type ChatOpenAICallOptions } from "@langchain/openai";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import type { AIMessageChunk } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
@@ -8,7 +8,7 @@ import { loadAttachmentContext } from "./attachments";
 import { circuitBreakerInfoFromDecision, createAgentLoopCircuitBreaker } from "./agent-loop-circuit-breaker";
 import { retrieveKnowledgeContext } from "./knowledge";
 import { resolveAndPersistModelContextBudget, getEnabledModelCapabilitySummary } from "./model-profiles";
-import { callChatCompletion, resolvePrimaryModelConfig } from "./model-runtime";
+import { callChatCompletion, resolvePrimaryModelConfig, resolveThinkingRequestConfig } from "./model-runtime";
 import { isRunInterrupted } from "./run-control";
 import { pushEvent } from "./sse";
 import { getWebSettings } from "./settings";
@@ -17,15 +17,13 @@ import { computePromptBudget, estimateMessagesTokens, estimateSectionTokens, est
 import { getAllEnabledToolDefs, toLcTool } from "./tools/registry";
 import type { ChatAttachment, Session, StreamEvent, ToolDef, ToolExecutionContext } from "./types";
 import { decodeHtml, parseToolArgs, toErrorMessage } from "./utils";
-import { getAllowedFileRoots, getWorkspaceRoot, isPathInsideWorkspace, workspaceBoundaryError } from "./workspace";
-
-const FILE_TOOL_NAMES = new Set(["file_read", "file_write"]);
-const MISSING_PRIMARY_MODEL_MESSAGE = "\u672a\u914d\u7f6e\u4e3b\u6a21\u578b\u3002\u8bf7\u5230 Settings > Models \u65b0\u589e\u4e00\u4e2a\u6a21\u578b\uff0c\u586b\u5199 API Key\uff0c\u5e76\u5c06\u5176\u8bbe\u4e3a Primary\u3002";
-const MISSING_API_KEY_MESSAGE = "\u5f53\u524d\u4e3b\u6a21\u578b\u672a\u914d\u7f6e API Key\u3002\u8bf7\u5230 Settings > Models \u8865\u5145\u540e\u518d\u8bd5\u3002";
-const LOOP_GUARD_FALLBACK_MESSAGE = "\n\n\u68c0\u6d4b\u5230\u672c\u8f6e\u6267\u884c\u5df2\u7ecf\u8fdb\u5165\u91cd\u590d\u5faa\u73af\uff0c\u6211\u5148\u5728\u8fd9\u91cc\u7ed3\u675f\u3002\u524d\u9762\u5df2\u53d6\u5230\u7684\u5de5\u5177\u7ed3\u679c\u4ecd\u4f1a\u4fdd\u7559\uff0c\u4f60\u53ef\u4ee5\u53d1\u9001\u201c\u7ee7\u7eed\u201d\u8ba9\u6211\u57fa\u4e8e\u73b0\u6709\u7ed3\u679c\u63a5\u7740\u5904\u7406\u3002";
-const EMPTY_RESPONSE_FALLBACK_MESSAGE = "\u6211\u6ca1\u6709\u751f\u6210\u6709\u6548\u56de\u590d\u3002\u8bf7\u518d\u53d1\u4e00\u6b21\uff0c\u6216\u68c0\u67e5\u6a21\u578b\u914d\u7f6e\u540e\u91cd\u8bd5\u3002";
+import { getWorkspaceRoot } from "./workspace";
+const MISSING_PRIMARY_MODEL_MESSAGE = "No primary model is configured. Go to Settings > Models, create a model, add an API key, and mark it as Primary.";
+const MISSING_API_KEY_MESSAGE = "The current primary model does not have an API key configured. Add one in Settings > Models and try again.";
+const LOOP_GUARD_FALLBACK_MESSAGE = "\n\nThis run entered a repeated loop, so I stopped here for now. The tool results gathered so far are still available. Send \"continue\" if you want me to keep working from the current results.";
+const EMPTY_RESPONSE_FALLBACK_MESSAGE = "I did not produce a valid reply. Please try again, or review the model configuration and retry.";
 const EMERGENCY_TOOL_LOOP_LIMIT = 48;
-const USER_INTERRUPTED_FALLBACK_MESSAGE = "\u5df2\u505c\u6b62\u5f53\u524d\u8fd0\u884c\u3002";
+const USER_INTERRUPTED_FALLBACK_MESSAGE = "Stopped the current run.";
 
 function buildDoneEvent(
   requestId: string,
@@ -46,59 +44,45 @@ function formatCapabilitySummary(summary: Awaited<ReturnType<typeof getEnabledMo
   return lines.length ? lines.join("\n") : "No specialist model profiles are configured.";
 }
 
+function buildOpenAIThinkingCallOptions(settings: AgentSettings, model: string): Partial<ChatOpenAICallOptions> {
+  const thinking = resolveThinkingRequestConfig(settings, model);
+  return thinking.openAIReasoningEffort
+    ? { reasoningEffort: thinking.openAIReasoningEffort }
+    : {};
+}
+
 function withSettingsAwareToolDefs(tools: ToolDef[], settings: AgentSettings): ToolDef[] {
-  const roots = getAllowedFileRoots(settings).join("; ");
   return tools.map((tool) => {
-    if (!FILE_TOOL_NAMES.has(tool.name)) {
-      if (tool.name === "shell_command") {
-        const timeoutSec = Math.round((settings.shellCommandTimeoutMs ?? 300_000) / 1000);
-        return {
-          ...tool,
-          description: [
-            tool.description,
-            `Configured default timeout: ${timeoutSec}s (${settings.shellCommandTimeoutMs ?? 300_000}ms).`,
-            "Omit timeoutMs to use that default.",
-            "Never run vite/webpack/npm run dev via shell_command. Use build or ask the user to start the dev server.",
-          ].join(" "),
-        };
-      }
-      return tool;
+    if (tool.name === "shell_command") {
+      const timeoutSec = Math.round((settings.shellCommandTimeoutMs ?? 300_000) / 1000);
+      return {
+        ...tool,
+        description: [
+          tool.description,
+          `Default cwd when omitted: ${getWorkspaceRoot(settings)}.`,
+          "cwd may be any absolute path on the local machine.",
+          `Configured default timeout: ${timeoutSec}s (${settings.shellCommandTimeoutMs ?? 300_000}ms).`,
+          "Omit timeoutMs to use that default.",
+          "Never run vite/webpack/npm run dev via shell_command. Use build or ask the user to start the dev server.",
+        ].join(" "),
+      };
     }
-    return {
-      ...tool,
-      description: [
-        tool.description,
-        `Current allowed roots: ${roots}.`,
-        "If the target path is outside these roots, do not call this tool because it will always fail.",
-        "Use shell_command for paths outside allowed roots.",
-      ].join(" "),
-    };
+    if (tool.name === "invoke_model") {
+      return {
+        ...tool,
+        description: [
+          tool.description,
+          'Use capability="vision" for image analysis, "image_generation" for text-to-image, "image_editing" for image edits, "speech_to_text" for transcription, and "text_to_speech" for spoken audio generation.',
+        ].join(" "),
+      };
+    }
+    return tool;
   });
 }
 
-function getFileToolPath(args: Record<string, unknown>) {
-  const raw = args.path ?? args.file_path;
-  return typeof raw === "string" ? raw.trim() : "";
-}
-
 function summarizeTerminalToolOutput(name: string, output: string) {
-  const cleaned = output.replace(/\r/g, "").trim();
-  if (!cleaned || cleaned.startsWith("Error:")) return "";
-
-  const firstLine = cleaned.split("\n").map((line) => line.trim()).find(Boolean) ?? "";
-  if (name === "install_skill") {
-    const match = firstLine.match(/^Installed skill:\s*(.+?)\s*\((.+?)\)$/i);
-    if (!match) return "";
-    const marketplace = cleaned.match(/^Marketplace:\s*(.+)$/im)?.[1]?.trim();
-    return `Installed: ${match[1]} (${match[2]})${marketplace ? `, source: ${marketplace}` : ""}.`;
-  }
-
-  if (name === "create_skill") {
-    const match = firstLine.match(/^Saved skill:\s*(.+?)\s*\((.+?)\)$/i);
-    if (!match) return "";
-    return `Created: ${match[1]} (${match[2]}).`;
-  }
-
+  void name;
+  void output;
   return "";
 }
 
@@ -357,6 +341,18 @@ export async function streamFromLLM(
 
   const apiBase = primaryConfig.apiBase;
   const model = primaryConfig.model;
+  const thinkingConfig = resolveThinkingRequestConfig(settings, model, {
+    thinkingEnabled: primaryConfig.thinkingEnabled,
+    thinkingEffort: primaryConfig.thinkingEffort,
+  });
+  const openAiThinkingOptions = buildOpenAIThinkingCallOptions(
+    {
+      ...settings,
+      thinkingEnabled: primaryConfig.thinkingEnabled ?? settings.thinkingEnabled,
+      thinkingEffort: primaryConfig.thinkingEffort ?? settings.thinkingEffort,
+    },
+    model,
+  );
   const capabilitySummary = await getEnabledModelCapabilitySummary();
   const skillInstructions = await getEnabledSkillInstructions();
   const enabledToolDefs = withSettingsAwareToolDefs(await getAllEnabledToolDefs(), settings);
@@ -398,27 +394,20 @@ export async function streamFromLLM(
     "Answer in the user's language. Be concise and action-oriented.",
     `Planning mode: ${settings.planningMode}.`,
     "If a tool loop starts repeating the same visible response without producing fresh progress, stop calling tools and give the best final answer from the current results.",
-    `Workspace root for file tools: ${getWorkspaceRoot(settings)}.`,
-    `Allowed file roots: ${getAllowedFileRoots(settings).join("; ")}.`,
-    "Tool budget matters: never call file_read or file_write unless you have verified the path is inside allowed roots.",
-    "If a path is outside allowed roots, do NOT call file_read/file_write. Use shell_command or ask the user to update Settings first.",
-    "After one file-tool boundary failure, do not call file_read/file_write again in the same reply.",
-    "Use tools when they are helpful. For web_search or http_request, cite useful result links in your answer when available.",
+    `Default shell_command cwd when omitted: ${getWorkspaceRoot(settings)}.`,
+    "Use tools when they are helpful.",
     "Never write DSML/XML-like tool call tags in the user-visible response. Use the provided tool-calling interface only.",
-    "Use shell_command for terminal tasks and for listing or inspecting paths outside the workspace.",
+    "Use shell_command for terminal tasks, filesystem inspection, and command-line workflows.",
+    "For shell_command, cwd may be any absolute path on the local machine. Omit cwd to use the default workspace root.",
     "For shell_command: omit timeoutMs to use the configured default script timeout (Settings). Do not pass timeoutMs: 6000 or other short values for npm install, build, or dev commands.",
     "Never use shell_command to start vite, webpack, or npm run dev because those processes do not exit and will block until timeout.",
     `Primary model: ${primaryConfig.name} / ${primaryConfig.model}.`,
     `Resolved context budget: window=${budgetConfig.contextWindowTokens}, input=${budgetConfig.maxInputTokens}, compact=${budgetConfig.autoCompactTokenLimit}, source=${resolvedBudget.contextWindowSource ?? "default"}.`,
     "You are the orchestrator. Route specialist work by capability instead of asking the user for a model name.",
-    "Use analyze_image for image recognition or visual question answering.",
-    "Use generate_image for text-to-image requests and edit_image when the user wants to modify an existing image.",
-    "Use transcribe_audio for speech-to-text and synthesize_speech for text-to-speech.",
-    "Use invoke_model with a capability when a configured specialist model is better suited for a non-media sub-task.",
+    'Use invoke_model with capability="vision" for image analysis, capability="image_generation" for text-to-image, capability="image_editing" for editing existing images, capability="speech_to_text" for transcription, and capability="text_to_speech" for spoken audio generation.',
+    "Use invoke_model with a capability when a configured specialist model is better suited for a sub-task.",
+    "Use recall_memory when prior durable context could materially improve the answer.",
     `Configured specialist capabilities:\n${formatCapabilitySummary(capabilitySummary)}`,
-    "For file_write, only write files when the user explicitly asks you to create or modify files.",
-    "When the user wants to create, search, or install a skill, prefer the dedicated search_skills, install_skill, and create_skill tools instead of sending them to the Skills page UI.",
-    "When the user asks to find a skill, treat internet skill marketplaces as the default search surface unless they explicitly ask for local-only skills.",
     ...(auxiliaryPrompt ? [auxiliaryPrompt] : []),
   ].join("\n");
 
@@ -480,7 +469,11 @@ export async function streamFromLLM(
           role: message.role === "assistant" ? "assistant" as const : "user" as const,
           content: message.content,
         })),
-      ], { temperature: primaryConfig.temperature ?? settings.temperature ?? 0.4, maxTokens: resolvedBudget.reservedOutputTokens ?? 2048 });
+      ], {
+        temperature: primaryConfig.temperature ?? settings.temperature ?? 0.4,
+        maxTokens: resolvedBudget.reservedOutputTokens ?? 2048,
+        thinking: thinkingConfig,
+      });
       for (const char of result.content) {
         pushEvent(requestId, { type: "token", content: char });
       }
@@ -521,7 +514,10 @@ export async function streamFromLLM(
   });
 
   const enabledToolMap = new Map(enabledToolDefs.map((tool) => [tool.name, tool]));
-  const llmRunner = enabledToolDefs.length > 0 ? llm.bindTools(enabledToolDefs.map(toLcTool)) : llm;
+  const llmRunner = enabledToolDefs.length > 0
+    ? llm.bindTools(enabledToolDefs.map(toLcTool), openAiThinkingOptions)
+    : llm.withConfig(openAiThinkingOptions);
+  const llmNoTools = llm.withConfig(openAiThinkingOptions);
   const toolCtx: ToolExecutionContext = {
     settings,
     apiKey: effectiveApiKey,
@@ -535,7 +531,6 @@ export async function streamFromLLM(
   const maxSteps = EMERGENCY_TOOL_LOOP_LIMIT;
   let reachedEmergencyLoopLimit = false;
   let interruptedByUser = false;
-  let fileToolsBlocked = false;
   let breakerInfo: ReturnType<typeof circuitBreakerInfoFromDecision> | undefined;
   const circuitBreaker = settings.circuitBreakerEnabled ? createAgentLoopCircuitBreaker(settings) : null;
 
@@ -634,36 +629,11 @@ export async function streamFromLLM(
         const t0 = Date.now();
         let output: string;
         try {
-          if (FILE_TOOL_NAMES.has(tc.name)) {
-            if (fileToolsBlocked) {
-              output = [
-                "[BLOCKED] file_read/file_write skipped to avoid wasting tool steps.",
-                "A previous file-tool call already failed the workspace boundary check in this reply.",
-                "Use shell_command instead, or ask the user to add the folder in Settings.",
-              ].join(" ");
-            } else {
-              const requestedPath = getFileToolPath(parsedArgs);
-              if (!requestedPath) {
-                output = "Error: Missing required argument: path";
-              } else if (!isPathInsideWorkspace(requestedPath, settings)) {
-                output = workspaceBoundaryError(requestedPath, settings);
-                fileToolsBlocked = true;
-              } else {
-                output = toolFn
-                  ? await toolFn.execute(parsedArgs, toolCtx)
-                  : `Tool is not enabled or unknown: ${tc.name}`;
-              }
-            }
-          } else {
-            output = toolFn
-              ? await toolFn.execute(parsedArgs, toolCtx)
-              : `Tool is not enabled or unknown: ${tc.name}`;
-          }
+          output = toolFn
+            ? await toolFn.execute(parsedArgs, toolCtx)
+            : `Tool is not enabled or unknown: ${tc.name}`;
         } catch (error) {
           output = `Error: ${toErrorMessage(error)}`;
-          if (FILE_TOOL_NAMES.has(tc.name) && output.includes("outside allowed file roots")) {
-            fileToolsBlocked = true;
-          }
         }
         const elapsed = (Date.now() - t0) / 1000;
 
@@ -707,7 +677,7 @@ export async function streamFromLLM(
     }
 
     if (!interruptedByUser && (reachedEmergencyLoopLimit || breakerInfo)) {
-      const finalStream = await llm.stream([
+      const finalStream = await llmNoTools.stream([
         ...lcMessages,
         new SystemMessage(
           breakerInfo

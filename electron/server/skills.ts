@@ -543,7 +543,11 @@ async function loadAllSkills() {
   return [...merged.values()]
     .map((skill) => ({
       ...skill,
-      enabled: stateMap.has(skill.key) ? stateMap.get(skill.key) === true : skill.enabled === true,
+      enabled: stateMap.has(skill.key)
+        ? stateMap.get(skill.key) === true
+        : skill.source === "built-in"
+          ? true
+          : skill.enabled === true,
     }))
     .sort((left, right) => {
       const sourceDelta = skillPriority(left) - skillPriority(right);

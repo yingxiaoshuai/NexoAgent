@@ -30,6 +30,7 @@ import type { McpServerConfig, McpServerListItem, McpServerStatus } from "../../
 import { apiGet, apiPost } from "../../services/api";
 import { useTheme } from "../../theme";
 import { OverflowMenuButton } from "../Common/OverflowMenuButton";
+import { useI18n } from "../../i18n";
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -54,86 +55,32 @@ interface McpServerFormValues {
 
 type TestingState = Record<string, boolean>;
 
-const UI_TEXT = {
-  builtinTools: "\u5185\u7f6e\u5de5\u5177",
-  mcpServices: "MCP \u670d\u52a1",
-  enable: "\u542f\u7528",
-  disable: "\u505c\u7528",
-  enabled: "\u5df2\u542f\u7528",
-  disabled: "\u5df2\u505c\u7528",
-  configuredServices: "\u5df2\u914d\u7f6e\u670d\u52a1",
-  connected: "\u8fde\u63a5\u6b63\u5e38",
-  discoveredTools: "\u53d1\u73b0\u5de5\u5177",
-  issues: "\u5f85\u5904\u7406\u5f02\u5e38",
-  refresh: "\u5237\u65b0",
-  addService: "\u65b0\u589e\u670d\u52a1",
-  noServices: "\u8fd8\u6ca1\u6709 MCP \u670d\u52a1\u914d\u7f6e",
-  testConnection: "\u6d4b\u8bd5\u8fde\u63a5",
-  delete: "\u5220\u9664",
-  startupCommand: "\u542f\u52a8\u547d\u4ee4\uff1a",
-  noToolsFound: "\u6682\u672a\u53d1\u73b0\u5de5\u5177",
-  save: "\u4fdd\u5b58",
-  cancel: "\u53d6\u6d88",
-  addMcpService: "\u65b0\u589e MCP \u670d\u52a1",
-  serviceName: "\u670d\u52a1\u540d\u79f0",
-  startCommand: "\u542f\u52a8\u547d\u4ee4",
-  commandArgsJson: "\u547d\u4ee4\u53c2\u6570 JSON",
-  saveSuccess: "MCP \u670d\u52a1\u914d\u7f6e\u5df2\u4fdd\u5b58",
-  deleteSuccess: "MCP \u670d\u52a1\u5df2\u5220\u9664",
-  testSuccess: "\u8fde\u63a5\u6210\u529f\uff0c\u53d1\u73b0 {count} \u4e2a\u5de5\u5177",
-  testEmpty: "\u8fde\u63a5\u6210\u529f\uff0c\u4f46\u6ca1\u6709\u53d1\u73b0\u53ef\u7528\u5de5\u5177",
-  testFailed: "\u8fde\u63a5\u6d4b\u8bd5\u5931\u8d25",
-  argsMustBeArray: "\u53c2\u6570\u5fc5\u987b\u662f JSON \u6570\u7ec4",
-  infoMessage:
-    "MCP \u670d\u52a1\u4f1a\u5728\u4fdd\u5b58\u540e\u81ea\u52a8\u5237\u65b0\u3002\u4f60\u4e5f\u53ef\u4ee5\u5bf9\u5355\u4e2a\u670d\u52a1\u6267\u884c\u6d4b\u8bd5\u8fde\u63a5\uff0c\u7acb\u5373\u67e5\u770b\u9519\u8bef\u8be6\u60c5\u4e0e\u5de5\u5177\u53d1\u73b0\u7ed3\u679c\u3002",
-  serviceNameRequired: "\u8bf7\u8f93\u5165\u670d\u52a1\u540d\u79f0",
-  commandRequired: "\u8bf7\u8f93\u5165\u542f\u52a8\u547d\u4ee4",
-  argsRequired: "\u8bf7\u8f93\u5165\u53c2\u6570 JSON",
-  statusConnected: "\u5df2\u8fde\u63a5",
-  statusEmpty: "\u5df2\u8fde\u63a5\u4f46\u65e0\u5de5\u5177",
-  statusError: "\u8fde\u63a5\u5931\u8d25",
-} as const;
-
-function parseArgsInput(raw: string) {
-  const trimmed = raw.trim();
-  if (!trimmed) return [];
-  const parsed = JSON.parse(trimmed) as unknown;
-  if (!Array.isArray(parsed)) {
-    throw new Error(UI_TEXT.argsMustBeArray);
-  }
-  return parsed.map((item) => String(item));
-}
-
 function summarizeToolName(name: string) {
   return name.replace(/^mcp__/, "");
 }
 
-function getStatusMeta(status?: McpServerStatus["status"]) {
-  switch (status) {
-    case "connected":
-      return {
-        color: "green",
-        label: UI_TEXT.statusConnected,
-        icon: <CheckCircleOutlined />,
+function localizeGroup(group: string, lang: "zh" | "en") {
+  const labels: Record<string, string> = lang === "zh"
+    ? {
+        system: "\u7cfb\u7edf",
+        research: "\u7814\u7a76",
+        productivity: "\u6548\u7387",
+        extension: "\u6269\u5c55",
+        mcp: "MCP",
+      }
+    : {
+        system: "System",
+        research: "Research",
+        productivity: "Productivity",
+        extension: "Extension",
+        mcp: "MCP",
       };
-    case "empty":
-      return {
-        color: "gold",
-        label: UI_TEXT.statusEmpty,
-        icon: <InfoCircleOutlined />,
-      };
-    case "error":
-    default:
-      return {
-        color: "red",
-        label: UI_TEXT.statusError,
-        icon: <CloseCircleOutlined />,
-      };
-  }
+  return labels[group] ?? group;
 }
 
 export default function Tools() {
   const { colors } = useTheme();
+  const { lang, t } = useI18n();
   const [messageApi, messageContext] = message.useMessage();
   const [tools, setTools] = useState<ToolItem[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServerListItem[]>([]);
@@ -142,6 +89,49 @@ export default function Tools() {
   const [mcpModalOpen, setMcpModalOpen] = useState(false);
   const [testingState, setTestingState] = useState<TestingState>({});
   const [mcpForm] = Form.useForm<McpServerFormValues>();
+
+  const ui = useMemo(() => ({
+    subtitle: lang === "zh"
+      ? "\u7edf\u4e00\u7ba1\u7406\u5185\u7f6e\u5de5\u5177\u548c MCP \u670d\u52a1\u3002"
+      : "Manage built-in tools and MCP services in one place.",
+    builtinTools: lang === "zh" ? "\u5185\u7f6e\u5de5\u5177" : "Built-in Tools",
+    mcpServices: lang === "zh" ? "MCP \u670d\u52a1" : "MCP Services",
+    configuredServices: lang === "zh" ? "\u5df2\u914d\u7f6e\u670d\u52a1" : "Configured Services",
+    connected: lang === "zh" ? "\u8fde\u63a5\u6b63\u5e38" : "Connected",
+    discoveredTools: lang === "zh" ? "\u5df2\u53d1\u73b0\u5de5\u5177" : "Discovered Tools",
+    issues: lang === "zh" ? "\u5f02\u5e38" : "Issues",
+    addService: lang === "zh" ? "\u65b0\u589e\u670d\u52a1" : "Add Service",
+    noBuiltinTools: lang === "zh" ? "\u6682\u65e0\u5185\u7f6e\u5de5\u5177" : "No built-in tools found.",
+    noServices: lang === "zh" ? "\u8fd8\u6ca1\u6709 MCP \u670d\u52a1\u914d\u7f6e" : "No MCP services configured yet.",
+    testConnection: lang === "zh" ? "\u6d4b\u8bd5\u8fde\u63a5" : "Test Connection",
+    startupCommand: lang === "zh" ? "\u542f\u52a8\u547d\u4ee4\uff1a" : "Startup command:",
+    noToolsFound: lang === "zh" ? "\u6682\u672a\u53d1\u73b0\u5de5\u5177" : "No tools discovered yet.",
+    addMcpService: lang === "zh" ? "\u65b0\u589e MCP \u670d\u52a1" : "Add MCP Service",
+    serviceName: lang === "zh" ? "\u670d\u52a1\u540d\u79f0" : "Service Name",
+    startCommand: lang === "zh" ? "\u542f\u52a8\u547d\u4ee4" : "Start Command",
+    commandArgsJson: lang === "zh" ? "\u547d\u4ee4\u53c2\u6570 JSON" : "Command Args JSON",
+    saveSuccess: lang === "zh" ? "MCP \u670d\u52a1\u914d\u7f6e\u5df2\u4fdd\u5b58" : "MCP service settings saved.",
+    deleteSuccess: lang === "zh" ? "MCP \u670d\u52a1\u5df2\u5220\u9664" : "MCP service deleted.",
+    testSuccess: (count: number) => lang === "zh"
+      ? `\u8fde\u63a5\u6210\u529f\uff0c\u53d1\u73b0 ${count} \u4e2a\u5de5\u5177`
+      : `Connection successful. Discovered ${count} tools.`,
+    testEmpty: lang === "zh"
+      ? "\u8fde\u63a5\u6210\u529f\uff0c\u4f46\u6ca1\u6709\u53d1\u73b0\u53ef\u7528\u5de5\u5177"
+      : "Connection successful, but no tools were discovered.",
+    testFailed: lang === "zh" ? "\u8fde\u63a5\u6d4b\u8bd5\u5931\u8d25" : "Connection test failed.",
+    loadFailed: lang === "zh" ? "\u52a0\u8f7d\u5de5\u5177\u6570\u636e\u5931\u8d25" : "Failed to load tool data.",
+    argsMustBeArray: lang === "zh" ? "\u53c2\u6570\u5fc5\u987b\u662f JSON \u6570\u7ec4" : "Args must be a JSON array.",
+    infoMessage: lang === "zh"
+      ? "MCP \u670d\u52a1\u5728\u4fdd\u5b58\u540e\u4f1a\u81ea\u52a8\u5237\u65b0\u3002\u4f60\u4e5f\u53ef\u4ee5\u5355\u72ec\u6d4b\u8bd5\u67d0\u4e2a\u670d\u52a1\uff0c\u7acb\u5373\u67e5\u770b\u9519\u8bef\u4fe1\u606f\u548c\u5de5\u5177\u53d1\u73b0\u7ed3\u679c\u3002"
+      : "MCP services refresh automatically after saving. You can also test a single service to inspect connection errors and discovered tools right away.",
+    serviceNameRequired: lang === "zh" ? "\u8bf7\u8f93\u5165\u670d\u52a1\u540d\u79f0" : "Please enter a service name.",
+    commandRequired: lang === "zh" ? "\u8bf7\u8f93\u5165\u542f\u52a8\u547d\u4ee4" : "Please enter a start command.",
+    argsRequired: lang === "zh" ? "\u8bf7\u8f93\u5165\u53c2\u6570 JSON" : "Please enter args JSON.",
+    statusConnected: lang === "zh" ? "\u5df2\u8fde\u63a5" : "Connected",
+    statusEmpty: lang === "zh" ? "\u5df2\u8fde\u63a5\uff0c\u4f46\u65e0\u5de5\u5177" : "Connected, no tools",
+    statusError: lang === "zh" ? "\u8fde\u63a5\u5931\u8d25" : "Connection failed",
+    toolsCount: (count: number) => lang === "zh" ? `${count} \u4e2a\u5de5\u5177` : `${count} tools`,
+  }), [lang]);
 
   const cardStyle: CSSProperties = useMemo(
     () => ({
@@ -152,7 +142,7 @@ export default function Tools() {
       overflow: "hidden",
       boxShadow: colors.bgPrimary === "#0e1726" ? "0 10px 30px rgba(0, 0, 0, 0.2)" : "0 10px 24px rgba(15, 23, 42, 0.06)",
     }),
-    [colors]
+    [colors],
   );
 
   const subtlePanelStyle: CSSProperties = useMemo(
@@ -162,8 +152,42 @@ export default function Tools() {
       borderRadius: 16,
       padding: 16,
     }),
-    [colors]
+    [colors],
   );
+
+  const parseArgsInput = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return [];
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!Array.isArray(parsed)) {
+      throw new Error(ui.argsMustBeArray);
+    }
+    return parsed.map((item) => String(item));
+  };
+
+  const getStatusMeta = (status?: McpServerStatus["status"]) => {
+    switch (status) {
+      case "connected":
+        return {
+          color: "green",
+          label: ui.statusConnected,
+          icon: <CheckCircleOutlined />,
+        };
+      case "empty":
+        return {
+          color: "gold",
+          label: ui.statusEmpty,
+          icon: <InfoCircleOutlined />,
+        };
+      case "error":
+      default:
+        return {
+          color: "red",
+          label: ui.statusError,
+          icon: <CloseCircleOutlined />,
+        };
+    }
+  };
 
   const loadAll = async () => {
     setLoading(true);
@@ -174,6 +198,8 @@ export default function Tools() {
       ]);
       setTools(toolData);
       setMcpServers(mcpData);
+    } catch (error) {
+      void messageApi.error(error instanceof Error ? error.message : ui.loadFailed);
     } finally {
       setLoading(false);
     }
@@ -181,7 +207,7 @@ export default function Tools() {
 
   useEffect(() => {
     void loadAll();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleTool = async (name: string, enabled: boolean) => {
     await apiPost("/api/tools", { name, enabled });
@@ -206,7 +232,7 @@ export default function Tools() {
     try {
       args = parseArgsInput(values.args);
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : UI_TEXT.argsMustBeArray);
+      void messageApi.error(error instanceof Error ? error.message : ui.argsMustBeArray);
       return;
     }
 
@@ -226,16 +252,16 @@ export default function Tools() {
     await persistServers(next);
     setMcpModalOpen(false);
     mcpForm.resetFields();
-    void messageApi.success(UI_TEXT.saveSuccess);
+    void messageApi.success(ui.saveSuccess);
   };
 
   const deleteMcpServer = async (name: string) => {
     await persistServers(
       mcpServers
         .filter((server) => server.name !== name)
-        .map((server) => ({ name: server.name, command: server.command, args: server.args }))
+        .map((server) => ({ name: server.name, command: server.command, args: server.args })),
     );
-    void messageApi.success(UI_TEXT.deleteSuccess);
+    void messageApi.success(ui.deleteSuccess);
   };
 
   const handleTestServer = async (server: McpServerListItem) => {
@@ -247,18 +273,18 @@ export default function Tools() {
         args: server.args,
       });
       setMcpServers((current) =>
-        current.map((item) => (item.name === server.name ? { ...item, runtimeStatus: result } : item))
+        current.map((item) => (item.name === server.name ? { ...item, runtimeStatus: result } : item)),
       );
       await loadAll();
       if (result.status === "connected") {
-        void messageApi.success(UI_TEXT.testSuccess.replace("{count}", String(result.toolCount)));
+        void messageApi.success(ui.testSuccess(result.toolCount));
       } else if (result.status === "empty") {
-        void messageApi.warning(UI_TEXT.testEmpty);
+        void messageApi.warning(ui.testEmpty);
       } else {
-        void messageApi.error(result.error || UI_TEXT.testFailed);
+        void messageApi.error(result.error || ui.testFailed);
       }
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : UI_TEXT.testFailed);
+      void messageApi.error(error instanceof Error ? error.message : ui.testFailed);
     } finally {
       setTestingState((current) => ({ ...current, [server.name]: false }));
     }
@@ -280,101 +306,112 @@ export default function Tools() {
   return (
     <div style={{ background: colors.bgPrimary, minHeight: "100%", padding: 24, color: colors.textPrimary }}>
       {messageContext}
-      <Title level={4} style={{ color: colors.textPrimary, marginBottom: 16 }}>
-        Tools
-      </Title>
+      <div style={{ marginBottom: 18 }}>
+        <Title level={4} style={{ color: colors.textPrimary, marginBottom: 6 }}>
+          {t("tools")}
+        </Title>
+        <Text style={{ color: colors.textMuted }}>{ui.subtitle}</Text>
+      </div>
 
       <Tabs
         items={[
           {
             key: "builtins",
-            label: UI_TEXT.builtinTools,
+            label: ui.builtinTools,
             children: loading ? (
               <div style={{ padding: 48, textAlign: "center" }}>
                 <Spin />
               </div>
             ) : (
               <div style={cardStyle}>
-                {builtinGroups.map((group, index) => (
-                  <div key={group}>
-                    {index > 0 && <Divider style={{ borderColor: colors.border, margin: 0 }} />}
-                    <List
-                      dataSource={tools.filter((tool) => tool.group === group)}
-                      renderItem={(tool) => (
-                        <List.Item
-                          style={{ borderColor: colors.border, paddingBlock: 14 }}
-                          actions={[
-                            <OverflowMenuButton
-                              key="more"
-                              color={colors.textSecondary}
-                              items={[{ key: "toggle", label: tool.enabled ? UI_TEXT.disable : UI_TEXT.enable }]}
-                              onItemClick={(key) => {
-                                if (key === "toggle") {
-                                  void toggleTool(tool.name, !tool.enabled);
-                                }
-                              }}
-                            />,
-                          ]}
-                        >
-                          <List.Item.Meta
-                            avatar={<ThunderboltOutlined style={{ color: colors.textSecondary, fontSize: 18, marginTop: 4 }} />}
-                            title={
-                              <Space size={8} wrap>
-                                <span style={{ color: colors.textPrimary, fontWeight: 600 }}>{tool.label || tool.name}</span>
-                                <Text style={{ color: colors.textMuted }}>{tool.name}</Text>
-                                <Tag color="blue">{tool.group}</Tag>
-                                <Tag color={tool.enabled ? "green" : "default"}>{tool.enabled ? UI_TEXT.enabled : UI_TEXT.disabled}</Tag>
-                              </Space>
-                            }
-                            description={<Text style={{ color: colors.textSecondary }}>{tool.description}</Text>}
-                          />
-                        </List.Item>
-                      )}
-                    />
+                {builtinGroups.length === 0 ? (
+                  <div style={{ padding: "18px 0" }}>
+                    <Text style={{ color: colors.textMuted }}>{ui.noBuiltinTools}</Text>
                   </div>
-                ))}
+                ) : (
+                  builtinGroups.map((group, index) => (
+                    <div key={group}>
+                      {index > 0 && <Divider style={{ borderColor: colors.border, margin: 0 }} />}
+                      <List
+                        dataSource={tools.filter((tool) => tool.group === group)}
+                        renderItem={(tool) => (
+                          <List.Item
+                            style={{ borderColor: colors.border, paddingBlock: 14 }}
+                            actions={[
+                              <OverflowMenuButton
+                                key="more"
+                                color={colors.textSecondary}
+                                items={[{ key: "toggle", label: tool.enabled ? t("disable") : t("enable") }]}
+                                onItemClick={(key) => {
+                                  if (key === "toggle") {
+                                    void toggleTool(tool.name, !tool.enabled);
+                                  }
+                                }}
+                              />,
+                            ]}
+                          >
+                            <List.Item.Meta
+                              avatar={<ThunderboltOutlined style={{ color: colors.textSecondary, fontSize: 18, marginTop: 4 }} />}
+                              title={(
+                                <Space size={8} wrap>
+                                  <span style={{ color: colors.textPrimary, fontWeight: 600 }}>{tool.label || tool.name}</span>
+                                  {tool.label && tool.label !== tool.name ? (
+                                    <Text style={{ color: colors.textMuted }}>{tool.name}</Text>
+                                  ) : null}
+                                  <Tag color="blue">{localizeGroup(tool.group, lang)}</Tag>
+                                  <Tag color={tool.enabled ? "green" : "default"}>{tool.enabled ? t("enabled") : t("disabled")}</Tag>
+                                </Space>
+                              )}
+                              description={<Text style={{ color: colors.textSecondary }}>{tool.description}</Text>}
+                            />
+                          </List.Item>
+                        )}
+                      />
+                    </div>
+                  ))
+                )}
               </div>
             ),
           },
           {
             key: "mcp",
-            label: UI_TEXT.mcpServices,
+            label: ui.mcpServices,
             children: (
               <>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 16 }}>
                   <div style={subtlePanelStyle}>
-                    <Text style={{ color: colors.textMuted, display: "block", marginBottom: 8 }}>{UI_TEXT.configuredServices}</Text>
+                    <Text style={{ color: colors.textMuted, display: "block", marginBottom: 8 }}>{ui.configuredServices}</Text>
                     <div style={{ fontSize: 28, fontWeight: 700, color: colors.textPrimary }}>{mcpServers.length}</div>
                   </div>
                   <div style={subtlePanelStyle}>
-                    <Text style={{ color: colors.textMuted, display: "block", marginBottom: 8 }}>{UI_TEXT.connected}</Text>
+                    <Text style={{ color: colors.textMuted, display: "block", marginBottom: 8 }}>{ui.connected}</Text>
                     <div style={{ fontSize: 28, fontWeight: 700, color: "#22c55e" }}>{connectedCount}</div>
                   </div>
                   <div style={subtlePanelStyle}>
-                    <Text style={{ color: colors.textMuted, display: "block", marginBottom: 8 }}>{UI_TEXT.discoveredTools}</Text>
+                    <Text style={{ color: colors.textMuted, display: "block", marginBottom: 8 }}>{ui.discoveredTools}</Text>
                     <div style={{ fontSize: 28, fontWeight: 700, color: colors.textPrimary }}>{mcpTools.length}</div>
                   </div>
                   <div style={subtlePanelStyle}>
-                    <Text style={{ color: colors.textMuted, display: "block", marginBottom: 8 }}>{UI_TEXT.issues}</Text>
+                    <Text style={{ color: colors.textMuted, display: "block", marginBottom: 8 }}>{ui.issues}</Text>
                     <div style={{ fontSize: 28, fontWeight: 700, color: errorCount > 0 ? "#ef4444" : colors.textPrimary }}>{errorCount}</div>
                   </div>
                 </div>
 
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 16 }}>
-                  <Alert type="info" showIcon message={UI_TEXT.infoMessage} style={{ flex: 1 }} />
+                  <Alert type="info" showIcon message={ui.infoMessage} style={{ flex: 1 }} />
                   <Space>
                     <Button icon={<SyncOutlined />} onClick={() => void loadAll()} loading={loading}>
-                      {UI_TEXT.refresh}
+                      {t("refresh")}
                     </Button>
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => setMcpModalOpen(true)}>
-                      {UI_TEXT.addService}
+                      {ui.addService}
                     </Button>
                   </Space>
                 </div>
 
                 <div style={cardStyle}>
                   <List
-                    locale={{ emptyText: UI_TEXT.noServices }}
+                    locale={{ emptyText: ui.noServices }}
                     dataSource={mcpServers}
                     loading={loading || saving}
                     renderItem={(server) => {
@@ -397,12 +434,12 @@ export default function Tools() {
                               loading={testing}
                               onClick={() => void handleTestServer(server)}
                             >
-                              {UI_TEXT.testConnection}
+                              {ui.testConnection}
                             </Button>,
                             <OverflowMenuButton
                               key="more"
                               color={colors.textSecondary}
-                              items={[{ key: "delete", label: UI_TEXT.delete, danger: true }]}
+                              items={[{ key: "delete", label: t("delete"), danger: true }]}
                               onItemClick={(key) => {
                                 if (key === "delete") {
                                   void deleteMcpServer(server.name);
@@ -413,19 +450,19 @@ export default function Tools() {
                         >
                           <List.Item.Meta
                             avatar={<GlobalOutlined style={{ color: colors.textSecondary, fontSize: 18, marginTop: 4 }} />}
-                            title={
+                            title={(
                               <Space size={8} wrap>
                                 <span style={{ color: colors.textPrimary, fontWeight: 600 }}>{server.name}</span>
                                 <Tag color={statusMeta.color} icon={statusMeta.icon}>
                                   {statusMeta.label}
                                 </Tag>
-                                <Tag color="blue">{status?.toolCount ?? serverTools.length} {UI_TEXT.discoveredTools}</Tag>
+                                <Tag color="blue">{ui.toolsCount(status?.toolCount ?? serverTools.length)}</Tag>
                               </Space>
-                            }
-                            description={
+                            )}
+                            description={(
                               <Space direction="vertical" size={8} style={{ width: "100%" }}>
                                 <Paragraph style={{ color: colors.textSecondary, marginBottom: 0 }}>
-                                  <Text style={{ color: colors.textMuted }}>{UI_TEXT.startupCommand}</Text>
+                                  <Text style={{ color: colors.textMuted }}>{ui.startupCommand}</Text>{" "}
                                   {server.command} {server.args.length > 0 ? JSON.stringify(server.args) : ""}
                                 </Paragraph>
                                 {status?.error ? (
@@ -437,7 +474,7 @@ export default function Tools() {
                                 ) : null}
                                 {visibleToolNames.length > 0 ? (
                                   <div>
-                                    <Text style={{ color: colors.textMuted, display: "block", marginBottom: 6 }}>{UI_TEXT.discoveredTools}</Text>
+                                    <Text style={{ color: colors.textMuted, display: "block", marginBottom: 6 }}>{ui.discoveredTools}</Text>
                                     <Space size={[6, 6]} wrap>
                                       {visibleToolNames.map((toolName) => (
                                         <Tag key={`${server.name}-${toolName}`} color="default">
@@ -447,10 +484,10 @@ export default function Tools() {
                                     </Space>
                                   </div>
                                 ) : (
-                                  <Text style={{ color: colors.textMuted }}>{UI_TEXT.noToolsFound}</Text>
+                                  <Text style={{ color: colors.textMuted }}>{ui.noToolsFound}</Text>
                                 )}
                               </Space>
-                            }
+                            )}
                           />
                         </List.Item>
                       );
@@ -464,15 +501,15 @@ export default function Tools() {
       />
 
       <Modal
-        title={UI_TEXT.addMcpService}
+        title={ui.addMcpService}
         open={mcpModalOpen}
         onOk={() => void saveMcpServer()}
         onCancel={() => {
           setMcpModalOpen(false);
           mcpForm.resetFields();
         }}
-        okText={UI_TEXT.save}
-        cancelText={UI_TEXT.cancel}
+        okText={t("save")}
+        cancelText={t("cancel")}
         confirmLoading={saving}
       >
         <Form
@@ -484,23 +521,23 @@ export default function Tools() {
             args: "[]",
           }}
         >
-          <Form.Item name="name" label={UI_TEXT.serviceName} rules={[{ required: true, message: UI_TEXT.serviceNameRequired }]}>
+          <Form.Item name="name" label={ui.serviceName} rules={[{ required: true, message: ui.serviceNameRequired }]}>
             <Input placeholder="filesystem" />
           </Form.Item>
-          <Form.Item name="command" label={UI_TEXT.startCommand} rules={[{ required: true, message: UI_TEXT.commandRequired }]}>
+          <Form.Item name="command" label={ui.startCommand} rules={[{ required: true, message: ui.commandRequired }]}>
             <Input placeholder="npx" />
           </Form.Item>
           <Form.Item
             name="args"
-            label={
+            label={(
               <Space size={6}>
-                <span>{UI_TEXT.commandArgsJson}</span>
+                <span>{ui.commandArgsJson}</span>
                 <Tooltip title='["@modelcontextprotocol/server-filesystem", "D:/company/nexoAgent"]'>
                   <InfoCircleOutlined style={{ color: colors.textMuted }} />
                 </Tooltip>
               </Space>
-            }
-            rules={[{ required: true, message: UI_TEXT.argsRequired }]}
+            )}
+            rules={[{ required: true, message: ui.argsRequired }]}
           >
             <TextArea rows={4} placeholder='["@modelcontextprotocol/server-filesystem", "D:/company/nexoAgent"]' />
           </Form.Item>

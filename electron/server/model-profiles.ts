@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { getProviderDefaultApiBase, getProviderName, normalizeProviderId, normalizeServiceProviderName } from "../../src/shared/providers";
-import { MODEL_CAPABILITIES, type DiscoveredModel, type ModelCapability, type ModelProfile, type ProviderId } from "../../src/shared/types";
+import { MODEL_CAPABILITIES, type DiscoveredModel, type ModelCapability, type ModelProfile, type ProviderId, type ThinkingEffort } from "../../src/shared/types";
 import { DATA_DIR, MODEL_PROFILES_FILE } from "./config";
 import { deleteStoredModelContextCacheEntry, inferBudgetFromProviderMetadata, isExplicitProfileContextBudget, resolveModelContextBudgetWithLookup, resolveStoredModelContextBudget, upsertStoredModelContextCacheEntry } from "./model-context";
 
@@ -53,6 +53,10 @@ function normalizeCapabilities(value: unknown, fallback: ModelCapability[] = ["c
   return uniqueCapabilities(normalized);
 }
 
+function normalizeThinkingEffort(value: unknown, fallback: ThinkingEffort = "high"): ThinkingEffort {
+  return value === "max" ? "max" : fallback;
+}
+
 function normalizeProfile(profile: Partial<ModelProfile> & Pick<ModelProfile, "name" | "apiBase" | "model">, existing?: StoredModelProfile): StoredModelProfile {
   const providerId = normalizeProviderId(profile.providerId ?? existing?.providerId);
   const apiBase = (profile.apiBase?.trim() || existing?.apiBase?.trim() || getProviderDefaultApiBase(providerId)).replace(/\/+$/, "");
@@ -77,6 +81,8 @@ function normalizeProfile(profile: Partial<ModelProfile> & Pick<ModelProfile, "n
     capabilities,
     isPrimary: wantsPrimary,
     temperature: profile.temperature ?? existing?.temperature ?? 0,
+    thinkingEnabled: profile.thinkingEnabled ?? existing?.thinkingEnabled ?? true,
+    thinkingEffort: normalizeThinkingEffort(profile.thinkingEffort ?? existing?.thinkingEffort, "high"),
     description: profile.description?.trim() || existing?.description || "",
     enabled: profile.enabled ?? existing?.enabled ?? true,
     contextWindowTokens: profile.contextWindowTokens ?? existing?.contextWindowTokens,
@@ -93,7 +99,13 @@ async function readStoredProfiles(): Promise<StoredModelProfile[]> {
   try {
     const raw = await fs.readFile(MODEL_PROFILES_FILE, "utf8");
     const parsed = JSON.parse(raw) as StoredModelProfile[];
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed)
+      ? parsed.map((profile) => ({
+          ...profile,
+          thinkingEnabled: profile.thinkingEnabled ?? true,
+          thinkingEffort: normalizeThinkingEffort(profile.thinkingEffort, "high"),
+        }))
+      : [];
   } catch {
     return [];
   }

@@ -1,22 +1,28 @@
 import type { AgentSettings } from "../../src/shared/types";
 import { isPreservedApiKeyInput } from "../../src/shared/settings";
-import { getProviderDefaultApiBase, getProviderName, normalizeProviderId } from "../../src/shared/providers";
+import {
+  getDefaultServiceProviderName,
+  getProviderDefaultApiBase,
+  normalizeProviderId,
+  normalizeServiceProviderName,
+} from "../../src/shared/providers";
 
 let webSettings: Partial<AgentSettings> = {};
 
 function normalizeSettingsShape<T extends Partial<AgentSettings>>(settings: T): T {
   const providerId = normalizeProviderId(settings.providerId);
+  const apiBase = (settings.apiBase?.trim() || getProviderDefaultApiBase(providerId)).replace(/\/+$/, "");
   return {
     ...settings,
     providerId,
-    providerName: getProviderName(providerId),
-    apiBase: (settings.apiBase?.trim() || getProviderDefaultApiBase(providerId)).replace(/\/+$/, ""),
+    providerName: normalizeServiceProviderName(settings.providerName, apiBase, providerId) || getDefaultServiceProviderName(providerId),
+    apiBase,
   };
 }
 
 export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   providerId: "openai-compatible",
-  providerName: getProviderName("openai-compatible"),
+  providerName: getDefaultServiceProviderName("openai-compatible"),
   apiBase: "https://api.openai.com/v1",
   apiKey: "",
   hasApiKey: false,
@@ -34,6 +40,8 @@ export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
   maxSteps: 20,
   shellCommandTimeoutMs: 300_000,
   planningMode: "balanced",
+  thinkingEnabled: true,
+  thinkingEffort: "high",
   circuitBreakerEnabled: true,
   circuitBreakerConsecutiveFailureLimit: 3,
   circuitBreakerRepeatedToolCallLimit: 3,

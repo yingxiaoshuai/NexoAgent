@@ -1,11 +1,11 @@
-import type { AgentSettings, ChatMessage, ModelCapability, ProviderId } from "../../src/shared/types";
+import type { AgentSettings, ChatMessage, ModelCapability, ProviderId, ThinkingEffort } from "../../src/shared/types";
 import { isModelCapability } from "../../src/shared/types";
 import { findStoredModelProfile, findStoredModelProfileByCapability, getPrimaryModelProfile } from "./model-profiles";
 import { resolveStoredModelContextBudget } from "./model-context";
 import type { ToolExecutionContext } from "./types";
 import { getOptionalStringArg, getStringArg } from "./utils";
 
-const MISSING_PRIMARY_MODEL_MESSAGE = "\u672a\u914d\u7f6e\u4e3b\u6a21\u578b\u3002\u8bf7\u5230 Settings > Models \u65b0\u589e\u4e00\u4e2a\u6a21\u578b\uff0c\u586b\u5199 API Key\uff0c\u5e76\u5c06\u5176\u8bbe\u4e3a Primary\u3002";
+const MISSING_PRIMARY_MODEL_MESSAGE = "No primary model is configured. Go to Settings > Models, create a model, add an API key, and mark it as Primary.";
 
 export interface ModelRuntimeConfig {
   name: string;
@@ -14,6 +14,8 @@ export interface ModelRuntimeConfig {
   apiKey: string;
   model: string;
   temperature: number;
+  thinkingEnabled?: boolean;
+  thinkingEffort?: ThinkingEffort;
   contextWindowTokens?: number;
   reservedOutputTokens?: number;
   autoCompactTokenLimit?: number;
@@ -21,6 +23,14 @@ export interface ModelRuntimeConfig {
   contextWindowSource?: string;
   contextWindowSourceDetail?: string;
   contextWindowResolvedAt?: string;
+}
+
+export interface ThinkingRequestConfig {
+  enabled: boolean;
+  effort: ThinkingEffort;
+  openAIReasoningEffort?: "none" | "high" | "xhigh";
+  anthropicThinkingType: "enabled" | "disabled";
+  anthropicEffort?: ThinkingEffort;
 }
 
 export interface ChatContentTextPart {
@@ -76,6 +86,33 @@ interface AnthropicMessageResponse {
   error?: { message?: string };
 }
 
+function normalizeThinkingEffort(value: unknown): ThinkingEffort {
+  return value === "max" ? "max" : "high";
+}
+
+function supportsOpenAINoneReasoning(model: string) {
+  return /\bgpt-5(?:[.-]|\b)/i.test(model);
+}
+
+export function resolveThinkingRequestConfig(
+  settings: Partial<AgentSettings> | undefined,
+  model = "",
+  overrides?: { thinkingEnabled?: boolean; thinkingEffort?: ThinkingEffort },
+): ThinkingRequestConfig {
+  const enabled = overrides?.thinkingEnabled ?? settings?.thinkingEnabled === true;
+  const effort = normalizeThinkingEffort(overrides?.thinkingEffort ?? settings?.thinkingEffort);
+
+  return {
+    enabled,
+    effort,
+    openAIReasoningEffort: enabled
+      ? (effort === "max" ? "xhigh" : "high")
+      : (supportsOpenAINoneReasoning(model) ? "none" : undefined),
+    anthropicThinkingType: enabled ? "enabled" : "disabled",
+    anthropicEffort: enabled ? effort : undefined,
+  };
+}
+
 function toRuntimeConfig(
   name: string,
   providerId: ProviderId,
@@ -83,7 +120,8 @@ function toRuntimeConfig(
   apiKey: string,
   model: string,
   temperature: number,
-  contextBudget: Partial<ModelRuntimeConfig> = {}
+  contextBudget: Partial<ModelRuntimeConfig> = {},
+  thinkingConfig: Pick<ModelRuntimeConfig, "thinkingEnabled" | "thinkingEffort"> = {},
 ): ModelRuntimeConfig {
   return {
     name,
@@ -92,6 +130,8 @@ function toRuntimeConfig(
     apiKey: apiKey.trim(),
     model: model.trim(),
     temperature,
+    thinkingEnabled: thinkingConfig.thinkingEnabled,
+    thinkingEffort: thinkingConfig.thinkingEffort,
     contextWindowTokens: contextBudget.contextWindowTokens,
     reservedOutputTokens: contextBudget.reservedOutputTokens,
     autoCompactTokenLimit: contextBudget.autoCompactTokenLimit,
@@ -106,7 +146,16 @@ export async function resolvePrimaryModelConfig(settings: AgentSettings, storedA
   const primary = await getPrimaryModelProfile();
   if (primary) {
     const budget = await resolveStoredModelContextBudget({ profile: primary, settings });
-    return toRuntimeConfig(primary.name, primary.providerId, primary.apiBase, primary.apiKey, primary.model, primary.temperature ?? settings.temperature, budget);
+    return toRuntimeConfig(
+      primary.name,
+      primary.providerId,
+      primary.apiBase,
+      primary.apiKey,
+      primary.model,
+      primary.temperature ?? settings.temperature,
+      budget,
+      { thinkingEnabled: primary.thinkingEnabled, thinkingEffort: primary.thinkingEffort },
+    );
   }
   const apiKey = settings.apiKey || storedApiKey || "";
   const model = settings.model?.trim() || "";
@@ -114,13 +163,16 @@ export async function resolvePrimaryModelConfig(settings: AgentSettings, storedA
     throw new Error(MISSING_PRIMARY_MODEL_MESSAGE);
   }
   const budget = await resolveStoredModelContextBudget({ settings });
-  return toRuntimeConfig("default", settings.providerId, settings.apiBase, apiKey, model, settings.temperature, budget);
+  return toRuntimeConfig("default", settings.providerId, settings.apiBase, apiKey, model, settings.temperature, budget, {
+    thinkingEnabled: settings.thinkingEnabled,
+    thinkingEffort: settings.thinkingEffort,
+  });
 }
 
 export async function resolveModelConfigFromArgs(
   args: Record<string, unknown>,
   ctx: ToolExecutionContext,
-  options: { capability?: ModelCapability; allowDefault?: boolean } = {}
+  options: { capability?: ModelCapability; allowDefault?: boolean } = {},
 ): Promise<ModelRuntimeConfig> {
   const profileQuery = getOptionalStringArg(args, "profile");
   const rawCapability = options.capability ?? (getOptionalStringArg(args, "capability") as ModelCapability | "");
@@ -135,7 +187,16 @@ export async function resolveModelConfigFromArgs(
       throw new Error(`Unknown model profile: ${profileQuery}`);
     }
     const budget = await resolveStoredModelContextBudget({ profile, settings: ctx.settings });
-    return toRuntimeConfig(profile.name, profile.providerId, profile.apiBase, profile.apiKey, profile.model, profile.temperature ?? ctx.settings.temperature, budget);
+    return toRuntimeConfig(
+      profile.name,
+      profile.providerId,
+      profile.apiBase,
+      profile.apiKey,
+      profile.model,
+      profile.temperature ?? ctx.settings.temperature,
+      budget,
+      { thinkingEnabled: profile.thinkingEnabled, thinkingEffort: profile.thinkingEffort },
+    );
   }
 
   if (capability) {
@@ -143,7 +204,16 @@ export async function resolveModelConfigFromArgs(
       ?? (capability === "chat" ? await findStoredModelProfileByCapability("orchestration") : null);
     if (profile) {
       const budget = await resolveStoredModelContextBudget({ profile, settings: ctx.settings });
-      return toRuntimeConfig(profile.name, profile.providerId, profile.apiBase, profile.apiKey, profile.model, profile.temperature ?? ctx.settings.temperature, budget);
+      return toRuntimeConfig(
+        profile.name,
+        profile.providerId,
+        profile.apiBase,
+        profile.apiKey,
+        profile.model,
+        profile.temperature ?? ctx.settings.temperature,
+        budget,
+        { thinkingEnabled: profile.thinkingEnabled, thinkingEffort: profile.thinkingEffort },
+      );
     }
     if (options.allowDefault === false) {
       throw new Error(`No enabled model profile is configured for capability "${capability}". Configure a specialist model in Settings > Models.`);
@@ -152,7 +222,10 @@ export async function resolveModelConfigFromArgs(
 
   if (!profileQuery || profileQuery === "default" || options.allowDefault !== false) {
     const budget = await resolveStoredModelContextBudget({ settings: ctx.settings });
-    return toRuntimeConfig("default", ctx.settings.providerId, ctx.apiBase, ctx.apiKey, ctx.settings.model, ctx.settings.temperature, budget);
+    return toRuntimeConfig("default", ctx.settings.providerId, ctx.apiBase, ctx.apiKey, ctx.settings.model, ctx.settings.temperature, budget, {
+      thinkingEnabled: ctx.settings.thinkingEnabled,
+      thinkingEffort: ctx.settings.thinkingEffort,
+    });
   }
 
   throw new Error(`Unable to resolve model profile: ${profileQuery}`);
@@ -199,7 +272,7 @@ function toAnthropicContent(content: string | ChatContentPart[]) {
 async function callAnthropicMessages(
   config: ModelRuntimeConfig,
   messages: ChatCompletionMessage[],
-  options: { temperature?: number; maxTokens?: number } = {}
+  options: { temperature?: number; maxTokens?: number; thinking?: ThinkingRequestConfig } = {},
 ) {
   const system = messages
     .filter((message) => message.role === "system")
@@ -224,6 +297,20 @@ async function callAnthropicMessages(
       model: config.model,
       max_tokens: options.maxTokens ?? 1024,
       temperature: options.temperature ?? config.temperature,
+      ...(options.thinking
+        ? {
+            thinking: {
+              type: options.thinking.anthropicThinkingType,
+            },
+          }
+        : {}),
+      ...(options.thinking?.enabled && options.thinking.anthropicEffort
+        ? {
+            output_config: {
+              effort: options.thinking.anthropicEffort,
+            },
+          }
+        : {}),
       ...(system ? { system } : {}),
       messages: anthropicMessages,
     }),
@@ -256,7 +343,7 @@ async function callAnthropicMessages(
 export async function callChatCompletion(
   config: ModelRuntimeConfig,
   messages: ChatCompletionMessage[],
-  options: { temperature?: number; maxTokens?: number } = {}
+  options: { temperature?: number; maxTokens?: number; thinking?: ThinkingRequestConfig } = {},
 ) {
   if (config.providerId === "anthropic-compatible") {
     return callAnthropicMessages(config, messages, options);
@@ -272,6 +359,9 @@ export async function callChatCompletion(
       model: config.model,
       temperature: options.temperature ?? config.temperature,
       max_tokens: options.maxTokens ?? 1024,
+      ...(options.thinking?.openAIReasoningEffort
+        ? { reasoning_effort: options.thinking.openAIReasoningEffort }
+        : {}),
       messages: messages.map((message) => ({
         role: message.role,
         content: normalizeChatContent(message.content),
@@ -304,7 +394,7 @@ export async function callImageGeneration(
     quality?: string;
     background?: string;
     outputFormat?: string;
-  }
+  },
 ) {
   if (config.providerId === "anthropic-compatible") {
     throw new Error("Anthropic compatible protocol does not provide OpenAI image generation endpoints. Configure an OpenAI-compatible image model for image_generation.");
@@ -349,7 +439,7 @@ export async function callImageEdit(
     background?: string;
     inputFidelity?: "low" | "high";
     outputFormat?: string;
-  }
+  },
 ) {
   if (config.providerId === "anthropic-compatible") {
     throw new Error("Anthropic compatible protocol does not provide OpenAI image editing endpoints. Configure an OpenAI-compatible image editing model for image_editing.");
@@ -393,7 +483,7 @@ export async function callSpeechToText(
     mimeType: string;
     prompt?: string;
     modelOverride?: string;
-  }
+  },
 ) {
   if (config.providerId === "anthropic-compatible") {
     throw new Error("Anthropic compatible protocol does not provide OpenAI speech-to-text endpoints. Configure an OpenAI-compatible audio model for speech_to_text.");
@@ -427,7 +517,7 @@ export async function callTextToSpeech(
     voice?: string;
     instructions?: string;
     modelOverride?: string;
-  }
+  },
 ) {
   if (config.providerId === "anthropic-compatible") {
     throw new Error("Anthropic compatible protocol does not provide OpenAI text-to-speech endpoints. Configure an OpenAI-compatible audio model for text_to_speech.");

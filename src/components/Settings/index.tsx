@@ -1,35 +1,50 @@
-import React, { useEffect, useState } from "react";
-import { Alert, Button, Checkbox, Divider, Form, Input, InputNumber, List, Modal, Select, Space, Switch, Tag, Typography, message } from "antd";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  Alert,
+  Button,
+  Checkbox,
+  Divider,
+  Form,
+  Input,
+  InputNumber,
+  List,
+  Modal,
+  Select,
+  Space,
+  Switch,
+  Tag,
+  Typography,
+  message,
+} from "antd";
 import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useChatStore } from "../../store/chat";
-import type { AgentSettings, DiscoveredModel, ModelCapability, ModelProfile, ProviderId } from "../../shared/types";
+import {
+  MODEL_CAPABILITIES,
+  type AgentSettings,
+  type DiscoveredModel,
+  type ModelCapability,
+  type ModelProfile,
+  type ProviderId,
+  type ThinkingEffort,
+} from "../../shared/types";
 import { useTheme } from "../../theme";
 import { apiDelete, apiGet, apiPost } from "../../services/api";
 import { sanitizeApiKeyForSave, SAVED_API_KEY_MASK } from "../../shared/settings";
 import { OverflowMenuButton } from "../Common/OverflowMenuButton";
+import { useI18n } from "../../i18n";
 import {
   getDefaultServiceProviderName,
   getProviderDefaultApiBase,
-  getProviderName,
+  getProviderOptions,
+  getProviderProtocolName,
   getServiceProviderDefaultApiBase,
+  getServiceProviderDisplayName,
   getServiceProviderOptions,
   normalizeProviderId,
   normalizeServiceProviderName,
-  PROVIDER_OPTIONS,
 } from "../../shared/providers";
 
-const { Text } = Typography;
-
-const CAPABILITY_LABELS: Record<ModelCapability, string> = {
-  orchestration: "主控",
-  chat: "对话",
-  vision: "图像识别",
-  image_generation: "图像生成",
-  image_editing: "P图",
-  speech_to_text: "语音识别",
-  text_to_speech: "语音合成",
-  embedding: "Embedding",
-};
+const { Text, Paragraph, Title } = Typography;
 
 const CAPABILITY_COLORS: Record<ModelCapability, string> = {
   orchestration: "blue",
@@ -42,30 +57,169 @@ const CAPABILITY_COLORS: Record<ModelCapability, string> = {
   embedding: "geekblue",
 };
 
-const MODEL_CAPABILITIES: ModelCapability[] = ["orchestration", "chat", "vision", "image_generation", "image_editing", "speech_to_text", "text_to_speech", "embedding"];
-
-const capabilityOptions = MODEL_CAPABILITIES.map((value) => ({ value, label: CAPABILITY_LABELS[value] }));
 const tokenCountFormatter = new Intl.NumberFormat("en-US");
 
 function formatTokenCount(value?: number) {
   return typeof value === "number" && Number.isFinite(value) ? tokenCountFormatter.format(value) : "-";
 }
 
-function getContextSourceMeta(profile: Pick<ModelProfile, "contextWindowSource" | "contextWindowSourceDetail">) {
+function buildCapabilityLabels(lang: "zh" | "en"): Record<ModelCapability, string> {
+  if (lang === "zh") {
+    return {
+      orchestration: "\u4e3b\u63a7",
+      chat: "\u5bf9\u8bdd",
+      vision: "\u89c6\u89c9",
+      image_generation: "\u56fe\u50cf\u751f\u6210",
+      image_editing: "\u56fe\u50cf\u7f16\u8f91",
+      speech_to_text: "\u8bed\u97f3\u8bc6\u522b",
+      text_to_speech: "\u8bed\u97f3\u5408\u6210",
+      embedding: "Embedding",
+    };
+  }
+
+  return {
+    orchestration: "Orchestration",
+    chat: "Chat",
+    vision: "Vision",
+    image_generation: "Image Generation",
+    image_editing: "Image Editing",
+    speech_to_text: "Speech to Text",
+    text_to_speech: "Text to Speech",
+    embedding: "Embedding",
+  };
+}
+
+function buildUi(lang: "zh" | "en") {
+  return {
+    pageTitle: lang === "zh" ? "\u8bbe\u7f6e" : "Settings",
+    pageSubtitle: lang === "zh"
+      ? "\u5728\u8fd9\u91cc\u7edf\u4e00\u7ba1\u7406\u5de5\u4f5c\u533a\u3001\u8bb0\u5fc6\u80fd\u529b\u548c\u6a21\u578b\u914d\u7f6e\u3002"
+      : "Manage workspace behavior, memory features, and model profiles from one place.",
+    createModel: lang === "zh" ? "\u65b0\u5efa\u6a21\u578b" : "New Model",
+    infoMessage: lang === "zh"
+      ? "\u73b0\u5728\u6a21\u578b\u5165\u53e3\u5df2\u6536\u655b\u5230\u201c\u65b0\u5efa\u6a21\u578b\u201d\u3002\u534f\u8bae\u53ea\u652f\u6301 OpenAI \u517c\u5bb9\u548c Anthropic \u517c\u5bb9\uff0c\u4f1a\u81ea\u52a8\u8bfb\u53d6\u5df2\u4fdd\u5b58\u7684 API Key \u4e0e\u670d\u52a1\u5546\u4fe1\u606f\u3002"
+      : "Model entry points are now consolidated under \"New Model\". The app supports OpenAI-compatible and Anthropic-compatible providers, and will reuse saved API keys and provider details when possible.",
+    generalSection: lang === "zh" ? "\u901a\u7528\u8bbe\u7f6e" : "General Settings",
+    modelSection: lang === "zh" ? "\u6a21\u578b\u5217\u8868" : "Model Profiles",
+    workspacePath: lang === "zh" ? "\u5de5\u4f5c\u533a\u8def\u5f84" : "Workspace Path",
+    workspacePathTip: lang === "zh"
+      ? "Agent \u9ed8\u8ba4\u4f7f\u7528\u7684\u5de5\u4f5c\u76ee\u5f55\u6839\u8def\u5f84\uff0c\u7559\u7a7a\u5219\u4f7f\u7528\u5f53\u524d\u9879\u76ee\u76ee\u5f55\u3002"
+      : "Default workspace root for the agent. Leave empty to use the current project directory.",
+    fileAccessRoots: lang === "zh" ? "\u989d\u5916\u6587\u4ef6\u8bbf\u95ee\u76ee\u5f55" : "Extra File Access Roots",
+    fileAccessRootsTip: lang === "zh"
+      ? "\u5141\u8bb8 Agent \u8bfb\u5199\u7684\u5176\u4ed6\u7edd\u5bf9\u8def\u5f84\uff0c\u4f8b\u5982 D:\\company\\shared\u3002"
+      : "Additional absolute directories the agent can read and write, for example D:\\company\\shared.",
+    enableMemory: lang === "zh" ? "\u542f\u7528\u8bb0\u5fc6" : "Enable Memory",
+    enableKnowledge: lang === "zh" ? "\u542f\u7528\u77e5\u8bc6\u5e93" : "Enable Knowledge Base",
+    temperature: "Temperature",
+    enableContextCompaction: lang === "zh" ? "\u542f\u7528\u4e0a\u4e0b\u6587\u81ea\u52a8\u538b\u7f29" : "Enable Context Auto-compaction",
+    shellTimeout: lang === "zh" ? "\u9ed8\u8ba4\u811a\u672c\u8d85\u65f6\uff08\u79d2\uff09" : "Default Shell Timeout (s)",
+    planningMode: lang === "zh" ? "\u89c4\u5212\u6a21\u5f0f" : "Planning Mode",
+    planningFast: lang === "zh" ? "\u5feb\u901f" : "Fast",
+    planningBalanced: lang === "zh" ? "\u5e73\u8861" : "Balanced",
+    planningDeep: lang === "zh" ? "\u6df1\u5ea6" : "Deep",
+    saveApplied: lang === "zh" ? "\u8bbe\u7f6e\u5df2\u4fdd\u5b58\uff0c\u4e0b\u4e00\u6761\u6d88\u606f\u4f1a\u7acb\u5373\u751f\u6548\u3002" : "Settings saved. The next message will use the updated configuration.",
+    modelEmpty: lang === "zh" ? "\u8fd8\u6ca1\u6709\u6a21\u578b\u914d\u7f6e" : "No model profiles yet.",
+    savedApiKey: lang === "zh" ? "\u5df2\u4fdd\u5b58 API Key" : "Saved API key",
+    primary: lang === "zh" ? "\u4e3b\u6a21\u578b" : "Primary",
+    contextManual: lang === "zh" ? "\u624b\u52a8" : "Manual",
+    contextProvider: lang === "zh" ? "\u63d0\u4f9b\u5546" : "Provider",
+    contextLookup: lang === "zh" ? "\u67e5\u8be2" : "Lookup",
+    contextCache: lang === "zh" ? "\u7f13\u5b58" : "Cache",
+    contextHint: lang === "zh" ? "\u63d0\u793a" : "Hint",
+    contextDictionary: lang === "zh" ? "\u5b57\u5178" : "Dictionary",
+    contextDefault: lang === "zh" ? "\u9ed8\u8ba4" : "Default",
+    contextWindow: lang === "zh" ? "\u7a97\u53e3" : "Window",
+    reservedOutput: lang === "zh" ? "\u9884\u7559\u8f93\u51fa" : "Reserve",
+    compactLimit: lang === "zh" ? "\u538b\u7f29\u9608\u503c" : "Compact",
+    thinking: lang === "zh" ? "\u6df1\u5ea6\u601d\u8003" : "Thinking",
+    thinkingOn: lang === "zh" ? "\u5f00\u542f" : "On",
+    thinkingOff: lang === "zh" ? "\u5173\u95ed" : "Off",
+    thinkingEffort: lang === "zh" ? "\u601d\u8003\u5f3a\u5ea6" : "Reasoning Effort",
+    thinkingHigh: lang === "zh" ? "\u9ad8" : "High",
+    thinkingMax: lang === "zh" ? "\u6700\u5927" : "Max",
+    description: lang === "zh" ? "\u8bf4\u660e" : "Description",
+    modalCreateTitle: lang === "zh" ? "\u65b0\u5efa\u6a21\u578b" : "Create Model",
+    modalEditTitle: lang === "zh" ? "\u7f16\u8f91\u6a21\u578b" : "Edit Model",
+    name: lang === "zh" ? "\u540d\u79f0" : "Name",
+    nameRequired: lang === "zh" ? "\u8bf7\u8f93\u5165\u540d\u79f0" : "Please enter a name.",
+    protocol: lang === "zh" ? "\u534f\u8bae" : "Protocol",
+    protocolRequired: lang === "zh" ? "\u8bf7\u9009\u62e9\u534f\u8bae" : "Please select a protocol.",
+    serviceProvider: lang === "zh" ? "API \u670d\u52a1\u5546" : "API Service Provider",
+    serviceProviderHint: lang === "zh"
+      ? "\u7528\u4e8e\u533a\u5206\u540c\u4e00\u534f\u8bae\u4e0b\u7684\u4e0d\u540c\u670d\u52a1\u5546\uff0c\u4f8b\u5982 DeepSeek\u3001OpenRouter \u6216 Xiaomi Mimo\u3002"
+      : "Use this to distinguish providers on the same protocol, such as DeepSeek, OpenRouter, or Xiaomi Mimo.",
+    serviceProviderPlaceholder: lang === "zh" ? "\u8bf7\u9009\u62e9 API \u670d\u52a1\u5546" : "Select an API service provider",
+    apiBase: "API Base",
+    apiKey: "API Key",
+    apiKeyKeep: lang === "zh" ? "API Key\uff08\u7559\u7a7a\u5219\u4fdd\u7559\u539f\u503c\uff09" : "API Key (leave empty to keep current value)",
+    replaceApiKey: lang === "zh" ? "\u66ff\u6362 API Key" : "Replace API key",
+    model: lang === "zh" ? "\u6a21\u578b" : "Model",
+    modelRequired: lang === "zh" ? "\u8bf7\u9009\u62e9\u6a21\u578b" : "Please select a model.",
+    fetchModels: lang === "zh" ? "\u91cd\u65b0\u83b7\u53d6" : "Refresh",
+    fetchingModels: lang === "zh" ? "\u6b63\u5728\u83b7\u53d6\u6a21\u578b..." : "Loading models...",
+    selectModel: lang === "zh" ? "\u8bf7\u9009\u62e9\u6a21\u578b" : "Select a model",
+    capabilities: lang === "zh" ? "\u80fd\u529b" : "Capabilities",
+    capabilitiesRequired: lang === "zh" ? "\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u80fd\u529b" : "Select at least one capability.",
+    primaryModel: lang === "zh" ? "\u8bbe\u4e3a\u4e3b\u6a21\u578b" : "Set as Primary",
+    enabledField: lang === "zh" ? "\u542f\u7528" : "Enabled",
+    discoveredFrom: (provider: string) => lang === "zh"
+      ? `\u4ece ${provider} \u53d1\u73b0`
+      : `Discovered from ${provider}`,
+    discoverSuccess: (count: number) => lang === "zh"
+      ? `\u5df2\u53d1\u73b0 ${count} \u4e2a\u6a21\u578b`
+      : `Discovered ${count} models.`,
+    discoverFailed: lang === "zh" ? "\u83b7\u53d6\u6a21\u578b\u5931\u8d25" : "Failed to fetch models.",
+    profileSaved: lang === "zh" ? "\u6a21\u578b\u914d\u7f6e\u5df2\u4fdd\u5b58" : "Model profile saved.",
+    profileDeleted: lang === "zh" ? "\u6a21\u578b\u914d\u7f6e\u5df2\u5220\u9664" : "Model profile deleted.",
+    deleteTitle: (name: string) => lang === "zh"
+      ? `\u5220\u9664\u6a21\u578b\u201c${name}\u201d\uff1f`
+      : `Delete model "${name}"?`,
+    primaryAction: lang === "zh" ? "\u8bbe\u4e3a\u4e3b\u6a21\u578b" : "Set as primary",
+    unsetPrimaryAction: lang === "zh" ? "\u53d6\u6d88\u4e3b\u6a21\u578b" : "Unset primary",
+    refreshContext: lang === "zh" ? "\u91cd\u65b0\u63a2\u6d4b\u4e0a\u4e0b\u6587" : "Refresh Context Budget",
+    refreshContextLoading: lang === "zh" ? "\u5237\u65b0\u4e2d..." : "Refreshing...",
+    refreshContextManual: lang === "zh"
+      ? "\u5f53\u524d\u6a21\u578b\u6b63\u5728\u4f7f\u7528\u624b\u52a8\u4e0a\u4e0b\u6587\u9884\u7b97\uff0c\u8bf7\u5148\u6e05\u9664\u624b\u52a8\u8986\u76d6\u518d\u91cd\u65b0\u63a2\u6d4b\u3002"
+      : "This profile is using a manual context budget. Clear the manual override before re-detecting.",
+    refreshContextSuccess: (source: string) => lang === "zh"
+      ? `\u4e0a\u4e0b\u6587\u9884\u7b97\u5df2\u4ece ${source} \u5237\u65b0\u3002`
+      : `Context budget refreshed from ${source}.`,
+    refreshContextFailed: lang === "zh" ? "\u4e0a\u4e0b\u6587\u9884\u7b97\u5237\u65b0\u5931\u8d25" : "Context refresh failed.",
+    actionsLabel: lang === "zh" ? "\u64cd\u4f5c" : "Actions",
+    actionsTooltip: lang === "zh" ? "\u7ba1\u7406\u8fd9\u4e2a\u6a21\u578b\u7684\u72b6\u6001\u548c\u914d\u7f6e" : "Manage this model",
+    thinkingHelpTitle: lang === "zh" ? "\u6df1\u5ea6\u601d\u8003" : "Thinking",
+    thinkingHelpText: lang === "zh"
+      ? "\u9ed8\u8ba4\u5f00\u542f\uff0c\u7528\u4e8e\u63a7\u5236\u8fd9\u4e2a\u6a21\u578b\u7684\u601d\u8003\u6a21\u5f0f\u548c\u601d\u8003\u5f3a\u5ea6\u3002"
+      : "Enabled by default. Controls this model's reasoning mode and effort.",
+    unknownProvider: lang === "zh" ? "\u672a\u77e5" : "Unknown",
+  };
+}
+
+function getContextSourceMeta(
+  profile: Pick<ModelProfile, "contextWindowSource" | "contextWindowSourceDetail">,
+  ui: ReturnType<typeof buildUi>,
+) {
   const source = profile.contextWindowSource;
   const detail = (profile.contextWindowSourceDetail || "").toLowerCase();
 
-  if (source === "user" || source === "profile") return { label: "manual", color: "gold" };
-  if (source === "provider") return { label: "provider", color: "blue" };
-  if (source === "lookup") return { label: "lookup", color: "purple" };
-  if (source === "cache") return { label: "cache", color: "cyan" };
-  if (source === "dictionary" && detail.startsWith("model-name token hint")) return { label: "hint", color: "orange" };
-  if (source === "dictionary") return { label: "dictionary", color: "green" };
-  return { label: source || "default", color: "default" };
+  if (source === "user" || source === "profile") return { label: ui.contextManual, color: "gold" };
+  if (source === "provider") return { label: ui.contextProvider, color: "blue" };
+  if (source === "lookup") return { label: ui.contextLookup, color: "purple" };
+  if (source === "cache") return { label: ui.contextCache, color: "cyan" };
+  if (source === "dictionary" && detail.startsWith("model-name token hint")) return { label: ui.contextHint, color: "orange" };
+  if (source === "dictionary") return { label: ui.contextDictionary, color: "green" };
+  return { label: ui.contextDefault, color: "default" };
 }
 
-function getServiceProviderLabel(profile: Pick<ModelProfile, "providerName" | "apiBase" | "providerId">) {
-  return normalizeServiceProviderName(profile.providerName, profile.apiBase, profile.providerId) || "unknown";
+function getServiceProviderLabel(
+  profile: Pick<ModelProfile, "providerName" | "apiBase" | "providerId">,
+  lang: "zh" | "en",
+  fallback: string,
+) {
+  const normalized = normalizeServiceProviderName(profile.providerName, profile.apiBase, profile.providerId);
+  if (!normalized) return fallback;
+  return getServiceProviderDisplayName(normalized, lang, profile.providerId);
 }
 
 const ApiKeyField: React.FC<{
@@ -74,8 +228,15 @@ const ApiKeyField: React.FC<{
   hasApiKey: boolean;
   inputStyle: React.CSSProperties;
   mutedColor: string;
-}> = ({ value, onChange, hasApiKey, inputStyle, mutedColor }) => {
+  placeholder: string;
+  replaceText: string;
+}> = ({ value, onChange, hasApiKey, inputStyle, mutedColor, placeholder, replaceText }) => {
   const [editing, setEditing] = useState(!hasApiKey);
+
+  useEffect(() => {
+    setEditing(!hasApiKey);
+  }, [hasApiKey]);
+
   const masked = hasApiKey && !editing;
   const displayValue = masked ? SAVED_API_KEY_MASK : (value ?? "");
 
@@ -85,10 +246,10 @@ const ApiKeyField: React.FC<{
         style={inputStyle}
         value={displayValue}
         readOnly={masked}
-        placeholder={masked ? undefined : "sk-..."}
-        onChange={(e) => onChange?.(e.target.value)}
+        placeholder={masked ? undefined : placeholder}
+        onChange={(event) => onChange?.(event.target.value)}
       />
-      {masked && (
+      {masked ? (
         <Button
           type="link"
           size="small"
@@ -98,9 +259,9 @@ const ApiKeyField: React.FC<{
             onChange?.("");
           }}
         >
-          更换密钥
+          {replaceText}
         </Button>
-      )}
+      ) : null}
     </div>
   );
 };
@@ -108,6 +269,10 @@ const ApiKeyField: React.FC<{
 export const Settings: React.FC = () => {
   const { settings, loadSettings, saveSettings } = useChatStore();
   const { colors } = useTheme();
+  const { lang, t } = useI18n();
+  const ui = useMemo(() => buildUi(lang), [lang]);
+  const capabilityLabels = useMemo(() => buildCapabilityLabels(lang), [lang]);
+  const providerOptions = useMemo(() => getProviderOptions(lang), [lang]);
   const [form] = Form.useForm<AgentSettings>();
   const [messageApi, ctx] = message.useMessage();
   const [formKey, setFormKey] = useState(0);
@@ -122,15 +287,38 @@ export const Settings: React.FC = () => {
   const watchedProviderName = Form.useWatch("providerName", profileForm) as string | undefined;
   const watchedApiBase = Form.useWatch("apiBase", profileForm) as string | undefined;
   const watchedApiKey = Form.useWatch("apiKey", profileForm) as string | undefined;
+
   const normalizedWatchedProviderId = normalizeProviderId(watchedProviderId);
-  const serviceProviderOptions = (() => {
-    const baseOptions = getServiceProviderOptions(normalizedWatchedProviderId);
-    const currentName = normalizeServiceProviderName(watchedProviderName, String(watchedApiBase ?? ""), normalizedWatchedProviderId);
+  const thinkingEffortOptions = useMemo(
+    () => [
+      { value: "high" as ThinkingEffort, label: ui.thinkingHigh },
+      { value: "max" as ThinkingEffort, label: ui.thinkingMax },
+    ],
+    [ui],
+  );
+  const capabilityOptions = useMemo(
+    () => MODEL_CAPABILITIES.map((value) => ({ value, label: capabilityLabels[value] })),
+    [capabilityLabels],
+  );
+
+  const serviceProviderOptions = useMemo(() => {
+    const baseOptions = getServiceProviderOptions(normalizedWatchedProviderId, lang);
+    const currentName = normalizeServiceProviderName(
+      watchedProviderName,
+      String(watchedApiBase ?? ""),
+      normalizedWatchedProviderId,
+    );
     if (!currentName || baseOptions.some((option) => option.value === currentName)) {
       return baseOptions;
     }
-    return [{ value: currentName, label: currentName }, ...baseOptions];
-  })();
+    return [
+      {
+        value: currentName,
+        label: getServiceProviderDisplayName(currentName, lang, normalizedWatchedProviderId),
+      },
+      ...baseOptions,
+    ];
+  }, [lang, normalizedWatchedProviderId, watchedApiBase, watchedProviderName]);
 
   useEffect(() => {
     void loadSettings();
@@ -163,8 +351,8 @@ export const Settings: React.FC = () => {
 
   const onSave = async (values: AgentSettings) => {
     await saveSettings(sanitizeApiKeyForSave({ ...settings, ...values }));
-    setFormKey((k) => k + 1);
-    void messageApi.success("设置已保存，下一条消息立即生效");
+    setFormKey((key) => key + 1);
+    void messageApi.success(ui.saveApplied);
   };
 
   const openCreateProfile = () => {
@@ -183,6 +371,8 @@ export const Settings: React.FC = () => {
       enabled: true,
       isPrimary: false,
       temperature: settings.temperature ?? 0,
+      thinkingEnabled: true,
+      thinkingEffort: "high",
       description: "",
     } as Partial<ModelProfile>);
     setDiscoveredModels([]);
@@ -214,7 +404,7 @@ export const Settings: React.FC = () => {
         profileId: editingProfile?.id,
       });
       setDiscoveredModels(models);
-      void messageApi.success(`发现 ${models.length} 个模型`);
+      void messageApi.success(ui.discoverSuccess(models.length));
       if (models.length > 0 && !profileForm.getFieldValue("model")) {
         const first = models[0];
         profileForm.setFieldsValue({
@@ -222,15 +412,15 @@ export const Settings: React.FC = () => {
           providerName: normalizeServiceProviderName(
             profileForm.getFieldValue("providerName") || first.ownedBy || "",
             String(values.apiBase ?? ""),
-            values.providerId
+            values.providerId,
           ),
           capabilities: first.capabilities.length ? first.capabilities : ["chat"],
           name: profileForm.getFieldValue("name") || first.label,
-          description: profileForm.getFieldValue("description") || (first.ownedBy ? `Discovered from ${first.ownedBy}` : "Discovered from provider"),
+          description: profileForm.getFieldValue("description") || (first.ownedBy ? ui.discoveredFrom(first.ownedBy) : ui.discoveredFrom("provider")),
         });
       }
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : "获取模型失败");
+      void messageApi.error(error instanceof Error ? error.message : ui.discoverFailed);
     } finally {
       setDiscovering(false);
     }
@@ -257,20 +447,20 @@ export const Settings: React.FC = () => {
     setProfileModalOpen(false);
     setEditingProfile(null);
     profileForm.resetFields();
-    void messageApi.success("模型配置已保存");
+    void messageApi.success(ui.profileSaved);
   };
 
   const deleteProfile = async (id: string) => {
     await apiDelete(`/api/model-profiles/${id}`);
     setProfiles((current) => current.filter((profile) => profile.id !== id));
-    void messageApi.success("模型配置已删除");
+    void messageApi.success(ui.profileDeleted);
   };
 
   const confirmDeleteProfile = (profile: ModelProfile) => {
     Modal.confirm({
-      title: `删除模型“${profile.name}”？`,
-      okText: "删除",
-      cancelText: "取消",
+      title: ui.deleteTitle(profile.name),
+      okText: t("delete"),
+      cancelText: t("cancel"),
       okButtonProps: { danger: true },
       onOk: async () => {
         await deleteProfile(profile.id);
@@ -305,7 +495,7 @@ export const Settings: React.FC = () => {
 
   const refreshProfileContext = async (profile: ModelProfile) => {
     if (profile.contextWindowSource === "user" || profile.contextWindowSource === "profile") {
-      void messageApi.info("This profile is using a manual context budget. Clear the manual override before re-detecting.");
+      void messageApi.info(ui.refreshContextManual);
       return;
     }
 
@@ -313,9 +503,9 @@ export const Settings: React.FC = () => {
     try {
       const saved = await apiPost<ModelProfile>(`/api/model-profiles/${profile.id}/refresh-context`, {});
       setProfiles((current) => current.map((item) => (item.id === saved.id ? saved : item)));
-      void messageApi.success(`Context budget refreshed from ${getContextSourceMeta(saved).label}.`);
+      void messageApi.success(ui.refreshContextSuccess(getContextSourceMeta(saved, ui).label));
     } catch (error) {
-      void messageApi.error(error instanceof Error ? error.message : "Context refresh failed.");
+      void messageApi.error(error instanceof Error ? error.message : ui.refreshContextFailed);
     } finally {
       setRefreshingContextProfileId("");
     }
@@ -323,7 +513,7 @@ export const Settings: React.FC = () => {
 
   const modelOptions = discoveredModels.map((model) => ({
     value: model.id,
-    label: model.ownedBy ? `${model.label} · ${model.ownedBy}` : model.label,
+    label: model.ownedBy ? `${model.label} | ${model.ownedBy}` : model.label,
   }));
 
   useEffect(() => {
@@ -339,166 +529,199 @@ export const Settings: React.FC = () => {
   }, [profileModalOpen, watchedProviderId, watchedApiBase, watchedApiKey, editingProfile?.id, editingProfile?.hasApiKey]);
 
   return (
-    <div style={{ padding: "28px 32px", maxWidth: 1040, color: colors.textPrimary }}>
+    <div style={{ padding: "28px 32px", maxWidth: 1100, color: colors.textPrimary }}>
       {ctx}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, marginBottom: 16 }}>
         <div>
-          <div style={{ fontSize: 18, fontWeight: 600 }}>设置</div>
-          <div style={{ color: colors.textMuted, fontSize: 12, marginTop: 4 }}>模型、记忆和高级参数统一在这里管理</div>
+          <Title level={4} style={{ color: colors.textPrimary, marginBottom: 6 }}>
+            {ui.pageTitle}
+          </Title>
+          <Text style={{ color: colors.textMuted }}>{ui.pageSubtitle}</Text>
         </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreateProfile}>
-          新建模型
+          {ui.createModel}
         </Button>
       </div>
 
       <Alert
         type="info"
         showIcon
-        message="只保留一个模型配置入口：新建模型。协议仅支持 OpenAI 兼容和 Anthropic 兼容，模型发现会自动读取协议对应的默认接口与已保存密钥。"
-        style={{ marginBottom: 16 }}
+        message={ui.infoMessage}
+        style={{ marginBottom: 20 }}
       />
 
+      <div style={{ marginBottom: 12, fontSize: 14, fontWeight: 600, color: colors.textPrimary }}>{ui.generalSection}</div>
       <Form
         key={formKey}
         form={form}
         layout="vertical"
-        onFinish={(v) => void onSave(v as AgentSettings)}
+        onFinish={(values) => void onSave(values as AgentSettings)}
         initialValues={{ ...settings, fileAccessRoots: settings.fileAccessRoots ?? [] }}
       >
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
           <div>
-            <Form.Item label={label("工作区路径")} name="workspacePath" tooltip="file_read / file_write 的默认根目录，留空则使用当前项目目录">
-              <Input style={inputStyle} placeholder="D:\company" />
+            <Form.Item label={label(ui.workspacePath)} name="workspacePath" tooltip={ui.workspacePathTip}>
+              <Input style={inputStyle} placeholder={"D:\\company"} />
             </Form.Item>
-            <Form.Item label={label("额外文件访问目录")} name="fileAccessRoots" tooltip="允许 Agent 读写的其他绝对路径，例如 D:\company\ceshi">
-              <Select mode="tags" open={false} style={{ width: "100%" }} placeholder="D:\company\ceshi" tokenSeparators={[","]} />
+            <Form.Item label={label(ui.fileAccessRoots)} name="fileAccessRoots" tooltip={ui.fileAccessRootsTip}>
+              <Select mode="tags" open={false} style={{ width: "100%" }} placeholder={"D:\\company\\shared"} tokenSeparators={[","]} />
             </Form.Item>
-            <Form.Item label={label("启用记忆")} name="enableMemory" valuePropName="checked">
+            <Form.Item label={label(ui.enableMemory)} name="enableMemory" valuePropName="checked">
               <Switch />
             </Form.Item>
-            <Form.Item label={label("启用知识库")} name="enableKnowledge" valuePropName="checked">
+            <Form.Item label={label(ui.enableKnowledge)} name="enableKnowledge" valuePropName="checked">
               <Switch />
             </Form.Item>
           </div>
           <div>
-            <Form.Item label={label("Temperature")} name="temperature">
+            <Form.Item label={label(ui.temperature)} name="temperature">
               <InputNumber min={0} max={2} step={0.1} style={{ width: "100%" }} />
             </Form.Item>
-            <Form.Item label={label("上下文自动压缩")} name="enableContextCompaction" valuePropName="checked">
+            <Form.Item label={label(ui.enableContextCompaction)} name="enableContextCompaction" valuePropName="checked">
               <Switch />
             </Form.Item>
-            <Form.Item label={label("默认脚本超时（秒）")} name="shellCommandTimeoutMs" getValueProps={(value) => ({ value: Math.round((value ?? 300_000) / 1000) })} normalize={(seconds) => Math.max(5, Math.min(600, Number(seconds) || 300)) * 1000}>
+            <Form.Item
+              label={label(ui.shellTimeout)}
+              name="shellCommandTimeoutMs"
+              getValueProps={(value) => ({ value: Math.round((value ?? 300_000) / 1000) })}
+              normalize={(seconds) => Math.max(5, Math.min(600, Number(seconds) || 300)) * 1000}
+            >
               <InputNumber min={5} max={600} style={{ width: "100%" }} />
             </Form.Item>
-            <Form.Item label={label("规划模式")} name="planningMode">
-              <Select style={{ width: "100%" }} options={[
-                { value: "fast", label: "快速（Fast）" },
-                { value: "balanced", label: "平衡（Balanced）" },
-                { value: "deep", label: "深度（Deep）" },
-              ]} />
+            <Form.Item label={label(ui.planningMode)} name="planningMode">
+              <Select
+                style={{ width: "100%" }}
+                options={[
+                  { value: "fast", label: ui.planningFast },
+                  { value: "balanced", label: ui.planningBalanced },
+                  { value: "deep", label: ui.planningDeep },
+                ]}
+              />
             </Form.Item>
           </div>
         </div>
 
         <Divider style={{ borderColor: colors.border, margin: "16px 0" }} />
         <Button htmlType="submit" type="primary" style={{ background: colors.accent, border: "none", borderRadius: 8 }}>
-          保存设置
+          {t("saveSettings")}
         </Button>
       </Form>
 
       <Divider style={{ borderColor: colors.border, margin: "24px 0" }} />
 
-      <div style={{ fontSize: 14, color: colors.textMuted, marginBottom: 12 }}>模型列表</div>
+      <div style={{ fontSize: 14, fontWeight: 600, color: colors.textPrimary, marginBottom: 12 }}>{ui.modelSection}</div>
       <List
-        locale={{ emptyText: "还没有模型配置" }}
+        locale={{ emptyText: ui.modelEmpty }}
         dataSource={profiles}
-        renderItem={(profile) => (
-          <List.Item
-            style={{ borderColor: colors.border }}
-            actions={[
-              <OverflowMenuButton
-                key="more"
-                color={colors.textSecondary}
-                items={[
-                  {
-                    key: "primary",
-                    label: profile.isPrimary ? "取消主模型" : "设为主模型",
-                    disabled: !profile.enabled && !profile.isPrimary,
-                  },
-                  { key: "toggle", label: profile.enabled ? "停用" : "启用" },
-                  {
-                    key: "refresh-context",
-                    label: refreshingContextProfileId === profile.id ? "重探测中..." : "重探测",
-                    disabled: refreshingContextProfileId === profile.id || profile.contextWindowSource === "user" || profile.contextWindowSource === "profile",
-                  },
-                  { key: "edit", label: "编辑" },
-                  { key: "delete", label: "删除", danger: true },
-                ]}
-                onItemClick={(key) => {
-                  if (key === "primary") {
-                    void setPrimaryProfile(profile, !profile.isPrimary);
-                    return;
-                  }
-                  if (key === "toggle") {
-                    void toggleProfileEnabled(profile, !profile.enabled);
-                    return;
-                  }
-                  if (key === "refresh-context") {
-                    void refreshProfileContext(profile);
-                    return;
-                  }
-                  if (key === "edit") {
-                    openEditProfile(profile);
-                    return;
-                  }
-                  if (key === "delete") {
-                    confirmDeleteProfile(profile);
-                  }
-                }}
-              />,
-            ]}
-          >
-            <List.Item.Meta
-              title={
-                <Space size={8} wrap>
-                  <span style={{ color: colors.textPrimary, fontWeight: 500 }}>{profile.name}</span>
-                  {profile.isPrimary && <Tag color="blue">主控</Tag>}
-                  <Tag color={profile.enabled ? "green" : "default"}>{profile.enabled ? "启用" : "停用"}</Tag>
-                  <Tag color="cyan">{getServiceProviderLabel(profile)}</Tag>
-                  <Tag>{getProviderName(profile.providerId)}</Tag>
-                  {profile.hasApiKey && <Tag color="gold">已保存密钥</Tag>}
-                  <Tag color={getContextSourceMeta(profile).color}>{getContextSourceMeta(profile).label}</Tag>
-                </Space>
-              }
-              description={
-                <Space direction="vertical" size={4}>
-                  <Text style={{ color: colors.textSecondary }}>{profile.model}</Text>
-                  <Space wrap size={4}>
-                    {(profile.capabilities ?? []).map((capability) => (
-                      <Tag key={capability} color={CAPABILITY_COLORS[capability]}>
-                        {CAPABILITY_LABELS[capability]}
-                      </Tag>
-                    ))}
+        renderItem={(profile) => {
+          const contextMeta = getContextSourceMeta(profile, ui);
+          const isRefreshing = refreshingContextProfileId === profile.id;
+
+          return (
+            <List.Item
+              style={{
+                borderColor: colors.border,
+                padding: "16px 18px",
+                marginBottom: 12,
+                borderRadius: 16,
+                background: colors.bgSecondary,
+                boxShadow: `inset 0 0 0 1px ${colors.border}`,
+              }}
+              actions={[
+                <OverflowMenuButton
+                  key="more"
+                  color={colors.accent}
+                  tooltip={ui.actionsTooltip}
+                  label={ui.actionsLabel}
+                  size="middle"
+                  variant="outlined"
+                  backgroundColor={colors.bgPrimary}
+                  borderColor={colors.accent}
+                  items={[
+                    {
+                      key: "primary",
+                      label: profile.isPrimary ? ui.unsetPrimaryAction : ui.primaryAction,
+                      disabled: !profile.enabled && !profile.isPrimary,
+                    },
+                    { key: "toggle", label: profile.enabled ? t("disable") : t("enable") },
+                    {
+                      key: "refresh-context",
+                      label: isRefreshing ? ui.refreshContextLoading : ui.refreshContext,
+                      disabled: isRefreshing || profile.contextWindowSource === "user" || profile.contextWindowSource === "profile",
+                    },
+                    { key: "edit", label: t("edit") },
+                    { key: "delete", label: t("delete"), danger: true },
+                  ]}
+                  onItemClick={(key) => {
+                    if (key === "primary") {
+                      void setPrimaryProfile(profile, !profile.isPrimary);
+                      return;
+                    }
+                    if (key === "toggle") {
+                      void toggleProfileEnabled(profile, !profile.enabled);
+                      return;
+                    }
+                    if (key === "refresh-context") {
+                      void refreshProfileContext(profile);
+                      return;
+                    }
+                    if (key === "edit") {
+                      openEditProfile(profile);
+                      return;
+                    }
+                    if (key === "delete") {
+                      confirmDeleteProfile(profile);
+                    }
+                  }}
+                />,
+              ]}
+            >
+              <List.Item.Meta
+                title={(
+                  <Space size={8} wrap>
+                    <span style={{ color: colors.textPrimary, fontWeight: 600 }}>{profile.name}</span>
+                    {profile.isPrimary ? <Tag color="blue">{ui.primary}</Tag> : null}
+                    <Tag color={profile.enabled ? "green" : "default"}>{profile.enabled ? t("enabled") : t("disabled")}</Tag>
+                    <Tag color="cyan">{getServiceProviderLabel(profile, lang, ui.unknownProvider)}</Tag>
+                    <Tag>{getProviderProtocolName(profile.providerId, lang)}</Tag>
+                    {profile.hasApiKey ? <Tag color="gold">{ui.savedApiKey}</Tag> : null}
+                    <Tag color={contextMeta.color}>{contextMeta.label}</Tag>
                   </Space>
-                  <Text style={{ color: colors.textSecondary }}>{profile.apiBase}</Text>
-                  <Space wrap size={8}>
-                    <Text style={{ color: colors.textSecondary }}>window {formatTokenCount(profile.contextWindowTokens)}</Text>
-                    <Text style={{ color: colors.textSecondary }}>reserve {formatTokenCount(profile.reservedOutputTokens)}</Text>
-                    <Text style={{ color: colors.textSecondary }}>compact {formatTokenCount(profile.autoCompactTokenLimit)}</Text>
+                )}
+                description={(
+                  <Space direction="vertical" size={6} style={{ width: "100%" }}>
+                    <Text style={{ color: colors.textSecondary }}>{profile.model}</Text>
+                    <Space wrap size={4}>
+                      {(profile.capabilities ?? []).map((capability) => (
+                        <Tag key={capability} color={CAPABILITY_COLORS[capability]}>
+                          {capabilityLabels[capability]}
+                        </Tag>
+                      ))}
+                    </Space>
+                    <Text style={{ color: colors.textSecondary }}>{profile.apiBase}</Text>
+                    <Space wrap size={8}>
+                      <Text style={{ color: colors.textSecondary }}>{ui.contextWindow} {formatTokenCount(profile.contextWindowTokens)}</Text>
+                      <Text style={{ color: colors.textSecondary }}>{ui.reservedOutput} {formatTokenCount(profile.reservedOutputTokens)}</Text>
+                      <Text style={{ color: colors.textSecondary }}>{ui.compactLimit} {formatTokenCount(profile.autoCompactTokenLimit)}</Text>
+                    </Space>
+                    <Space wrap size={8}>
+                      <Text style={{ color: colors.textSecondary }}>{ui.thinking} {profile.thinkingEnabled === false ? ui.thinkingOff : ui.thinkingOn}</Text>
+                      <Text style={{ color: colors.textSecondary }}>{ui.thinkingEffort} {profile.thinkingEffort === "max" ? ui.thinkingMax : ui.thinkingHigh}</Text>
+                    </Space>
+                    {profile.contextWindowSourceDetail ? (
+                      <Text style={{ color: colors.textMuted, fontSize: 12 }}>{profile.contextWindowSourceDetail}</Text>
+                    ) : null}
+                    {profile.description ? <Text style={{ color: colors.textSecondary }}>{profile.description}</Text> : null}
                   </Space>
-                  {profile.contextWindowSourceDetail && (
-                    <Text style={{ color: colors.textMuted, fontSize: 12 }}>{profile.contextWindowSourceDetail}</Text>
-                  )}
-                  {profile.description && <Text style={{ color: colors.textSecondary }}>{profile.description}</Text>}
-                </Space>
-              }
-            />
-          </List.Item>
-        )}
+                )}
+              />
+            </List.Item>
+          );
+        }}
       />
 
       <Modal
-        title={editingProfile ? "编辑模型" : "新建模型"}
+        title={editingProfile ? ui.modalEditTitle : ui.modalCreateTitle}
         open={profileModalOpen}
         onOk={() => void saveProfile()}
         onCancel={() => {
@@ -506,17 +729,17 @@ export const Settings: React.FC = () => {
           setEditingProfile(null);
           profileForm.resetFields();
         }}
-        okText="保存"
-        cancelText="取消"
-        width={720}
+        okText={t("save")}
+        cancelText={t("cancel")}
+        width={760}
       >
         <Form form={profileForm} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true, message: "请输入名称" }]}>
+          <Form.Item name="name" label={ui.name} rules={[{ required: true, message: ui.nameRequired }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="providerId" label="协议" rules={[{ required: true, message: "请选择协议" }]}>
+          <Form.Item name="providerId" label={ui.protocol} rules={[{ required: true, message: ui.protocolRequired }]}>
             <Select
-              options={PROVIDER_OPTIONS}
+              options={providerOptions}
               onChange={(nextProviderId) => {
                 const previousProviderId = normalizeProviderId(profileForm.getFieldValue("providerId"));
                 const currentProviderName = String(profileForm.getFieldValue("providerName") ?? "").trim();
@@ -539,15 +762,15 @@ export const Settings: React.FC = () => {
               }}
             />
           </Form.Item>
-                   <Form.Item
+          <Form.Item
             name="providerName"
-            label={"API \u670d\u52a1\u63d0\u4f9b\u5546"}
-            extra={"\u7528\u4e8e\u533a\u5206\u540c\u534f\u8bae\u4e0b\u7684\u4e0d\u540c\u670d\u52a1\u5546\uff0c\u4f8b\u5982 DeepSeek\u3001OpenRouter\u3001\u5c0f\u7c73 Mimo\u3002"}
+            label={ui.serviceProvider}
+            extra={ui.serviceProviderHint}
           >
             <Select
               showSearch
               options={serviceProviderOptions}
-              placeholder={"\u8bf7\u9009\u62e9 API \u670d\u52a1\u63d0\u4f9b\u5546"}
+              placeholder={ui.serviceProviderPlaceholder}
               onChange={(nextProviderName) => {
                 const defaultApiBase = getServiceProviderDefaultApiBase(nextProviderName, normalizedWatchedProviderId);
                 if (!defaultApiBase) return;
@@ -560,12 +783,12 @@ export const Settings: React.FC = () => {
               }}
             />
           </Form.Item>
-          <Form.Item name="apiBase" label="API Base">
+          <Form.Item name="apiBase" label={ui.apiBase}>
             <Input
               placeholder={getServiceProviderDefaultApiBase(watchedProviderName, normalizedWatchedProviderId) || (watchedProviderId ? getProviderDefaultApiBase(watchedProviderId) : "https://api.example.com/v1")}
               onBlur={(event) => {
                 const currentProviderName = String(profileForm.getFieldValue("providerName") ?? "").trim();
-                if (!currentProviderName || currentProviderName === "???") {
+                if (!currentProviderName || currentProviderName === "Custom") {
                   profileForm.setFieldsValue({
                     providerName: normalizeServiceProviderName(currentProviderName, event.target.value, normalizedWatchedProviderId),
                   });
@@ -573,25 +796,31 @@ export const Settings: React.FC = () => {
               }}
             />
           </Form.Item>
-          <Form.Item name="apiKey" label={editingProfile?.hasApiKey ? "API Key（留空则保留原值）" : "API Key"}>
-            <ApiKeyField hasApiKey={Boolean(editingProfile?.hasApiKey)} inputStyle={inputStyle} mutedColor={colors.textMuted} />
+          <Form.Item name="apiKey" label={editingProfile?.hasApiKey ? ui.apiKeyKeep : ui.apiKey}>
+            <ApiKeyField
+              hasApiKey={Boolean(editingProfile?.hasApiKey)}
+              inputStyle={inputStyle}
+              mutedColor={colors.textMuted}
+              placeholder="sk-..."
+              replaceText={ui.replaceApiKey}
+            />
           </Form.Item>
           <Form.Item
             name="model"
-            label={
+            label={(
               <Space style={{ width: "100%", justifyContent: "space-between" }}>
-                <span>模型</span>
+                <span>{ui.model}</span>
                 <Button type="link" icon={<ReloadOutlined />} loading={discovering} onClick={() => void discoverProfileModels()}>
-                  重新获取
+                  {ui.fetchModels}
                 </Button>
               </Space>
-            }
-            rules={[{ required: true, message: "请选择模型" }]}
+            )}
+            rules={[{ required: true, message: ui.modelRequired }]}
           >
             <Select
               options={modelOptions}
               showSearch
-              placeholder={discovering ? "正在获取模型..." : "请选择模型"}
+              placeholder={discovering ? ui.fetchingModels : ui.selectModel}
               onSelect={(value) => {
                 const model = discoveredModels.find((item) => item.id === value);
                 if (!model) return;
@@ -599,24 +828,57 @@ export const Settings: React.FC = () => {
                   model: model.id,
                   name: profileForm.getFieldValue("name") || model.label,
                   capabilities: model.capabilities.length ? model.capabilities : ["chat"],
-                  description: profileForm.getFieldValue("description") || (model.ownedBy ? `Discovered from ${model.ownedBy}` : "Discovered from provider"),
+                  thinkingEnabled: profileForm.getFieldValue("thinkingEnabled") ?? true,
+                  thinkingEffort: profileForm.getFieldValue("thinkingEffort") || "high",
+                  description: profileForm.getFieldValue("description") || (model.ownedBy ? ui.discoveredFrom(model.ownedBy) : ui.discoveredFrom("provider")),
                 });
               }}
             />
           </Form.Item>
-          <Form.Item name="capabilities" label="能力" rules={[{ required: true, message: "请选择至少一个能力" }]}>
+          <Form.Item name="capabilities" label={ui.capabilities} rules={[{ required: true, message: ui.capabilitiesRequired }]}>
             <Checkbox.Group options={capabilityOptions} style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }} />
           </Form.Item>
-          <Form.Item name="isPrimary" label="主控模型" valuePropName="checked">
+          <Form.Item name="isPrimary" label={ui.primaryModel} valuePropName="checked">
             <Switch />
           </Form.Item>
-          <Form.Item name="temperature" label="Temperature">
+          <Form.Item name="temperature" label={ui.temperature}>
             <InputNumber min={0} max={2} step={0.1} style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item name="description" label="说明">
+          <div
+            style={{
+              marginBottom: 16,
+              padding: "14px 16px",
+              borderRadius: 14,
+              border: `1px solid ${colors.borderStrong}`,
+              background: colors.bgTertiary,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12 }}>
+              <div>
+                <div style={{ color: colors.textPrimary, fontWeight: 600 }}>{ui.thinkingHelpTitle}</div>
+                <div style={{ color: colors.textMuted, fontSize: 12, marginTop: 4 }}>
+                  {ui.thinkingHelpText}
+                </div>
+              </div>
+              <Form.Item name="thinkingEnabled" valuePropName="checked" noStyle>
+                <Switch />
+              </Form.Item>
+            </div>
+            <Form.Item noStyle shouldUpdate={(prev, next) => prev.thinkingEnabled !== next.thinkingEnabled}>
+              {({ getFieldValue }) => (
+                <Form.Item name="thinkingEffort" label={ui.thinkingEffort} style={{ marginBottom: 0 }}>
+                  <Select
+                    disabled={getFieldValue("thinkingEnabled") === false}
+                    options={thinkingEffortOptions}
+                  />
+                </Form.Item>
+              )}
+            </Form.Item>
+          </div>
+          <Form.Item name="description" label={ui.description}>
             <Input.TextArea rows={3} />
           </Form.Item>
-          <Form.Item name="enabled" label="启用" valuePropName="checked">
+          <Form.Item name="enabled" label={ui.enabledField} valuePropName="checked">
             <Switch />
           </Form.Item>
         </Form>

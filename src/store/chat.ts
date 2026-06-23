@@ -3,7 +3,12 @@ import { v4 as uuid } from "uuid";
 import type { AgentSettings, Attachment as ChatAttachment, ChatMessage } from "../shared/types";
 import { apiDelete, apiGet, apiPatch, apiPost, getRuntimeApiBase, setRuntimeApiBase, subscribeStream } from "../services/api";
 import { sanitizeApiKeyForSave } from "../shared/settings";
-import { getProviderDefaultApiBase, getProviderName, normalizeProviderId } from "../shared/providers";
+import {
+  getDefaultServiceProviderName,
+  getProviderDefaultApiBase,
+  normalizeProviderId,
+  normalizeServiceProviderName,
+} from "../shared/providers";
 import type { ToolCallEvent } from "../components/ChatPanel/ToolCallSteps";
 
 export interface SessionMeta {
@@ -45,7 +50,7 @@ interface ChatStore {
 
 const defaultSettings: AgentSettings = {
   providerId: "openai-compatible",
-  providerName: getProviderName("openai-compatible"),
+  providerName: getDefaultServiceProviderName("openai-compatible"),
   apiBase: "https://api.openai.com/v1",
   apiKey: "",
   hasApiKey: false,
@@ -63,6 +68,8 @@ const defaultSettings: AgentSettings = {
   maxSteps: 20,
   shellCommandTimeoutMs: 300_000,
   planningMode: "balanced",
+  thinkingEnabled: true,
+  thinkingEffort: "high",
   circuitBreakerEnabled: true,
   circuitBreakerConsecutiveFailureLimit: 3,
   circuitBreakerRepeatedToolCallLimit: 3,
@@ -81,11 +88,12 @@ const defaultSettings: AgentSettings = {
 
 function normalizeSettingsShape<T extends Partial<AgentSettings>>(settings: T): T {
   const providerId = normalizeProviderId(settings.providerId);
+  const apiBase = (settings.apiBase?.trim() || getProviderDefaultApiBase(providerId)).replace(/\/+$/, "");
   return {
     ...settings,
     providerId,
-    providerName: getProviderName(providerId),
-    apiBase: (settings.apiBase?.trim() || getProviderDefaultApiBase(providerId)).replace(/\/+$/, ""),
+    providerName: normalizeServiceProviderName(settings.providerName, apiBase, providerId) || getDefaultServiceProviderName(providerId),
+    apiBase,
   };
 }
 
@@ -411,8 +419,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     saveSettings: async (partial) => {
+      const current = get().settings;
+      const merged = normalizeSettingsShape({ ...current, ...partial }) as AgentSettings;
+      set({
+        settings: normalizeSettingsShape({
+          ...defaultSettings,
+          ...merged,
+          hasApiKey: partial.hasApiKey ?? (current.hasApiKey || Boolean((partial.apiKey ?? "").trim())),
+        }) as AgentSettings,
+      });
+
       await ensureRuntimeReady();
-      const merged = { ...get().settings, ...partial };
       const payload = sanitizeApiKeyForSave(merged);
       const desktop = getDesktopApi();
       if (desktop) {

@@ -31,7 +31,7 @@ export function registerMcpServerRoutes(app: Application) {
   app.post("/api/mcp-servers/test", async (req, res) => {
     const server = normalizeMcpServerConfig(req.body as McpServerConfig);
     if (!server.name || !server.command) {
-      return res.status(400).json({ error: "\u670d\u52a1\u540d\u79f0\u548c\u547d\u4ee4\u4e0d\u80fd\u4e3a\u7a7a" });
+      return res.status(400).json({ error: "Service name and command are required." });
     }
 
     const result = await testMcpServer(server);

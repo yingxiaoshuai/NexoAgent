@@ -5,7 +5,13 @@ import http from "node:http";
 import net from "node:net";
 import { createExpressApp } from "./server/index";
 import { applyAgentSettings } from "./server/settings";
-import { getProviderDefaultApiBase, getProviderName, normalizeProviderId } from "../src/shared/providers";
+import { DATA_DIR, SETTINGS_FILE } from "./server/config";
+import {
+  getDefaultServiceProviderName,
+  getProviderDefaultApiBase,
+  normalizeProviderId,
+  normalizeServiceProviderName,
+} from "../src/shared/providers";
 import type {
   AgentSettings,
   RuntimeInfo
@@ -21,7 +27,7 @@ const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
 const defaultSettings: AgentSettings = {
   providerId: "openai-compatible",
-  providerName: getProviderName("openai-compatible"),
+  providerName: getDefaultServiceProviderName("openai-compatible"),
   apiBase: "https://api.openai.com/v1",
   apiKey: "",
   hasApiKey: false,
@@ -39,6 +45,8 @@ const defaultSettings: AgentSettings = {
   maxSteps: 20,
   shellCommandTimeoutMs: 300_000,
   planningMode: "balanced",
+  thinkingEnabled: true,
+  thinkingEffort: "high",
   circuitBreakerEnabled: true,
   circuitBreakerConsecutiveFailureLimit: 3,
   circuitBreakerRepeatedToolCallLimit: 3,
@@ -76,11 +84,12 @@ let cachedApiKey = "";
 
 function normalizeSettingsShape<T extends Partial<AgentSettings>>(settings: T): T {
   const providerId = normalizeProviderId(settings.providerId);
+  const apiBase = (settings.apiBase?.trim() || getProviderDefaultApiBase(providerId)).replace(/\/+$/, "");
   return {
     ...settings,
     providerId,
-    providerName: getProviderName(providerId),
-    apiBase: (settings.apiBase?.trim() || getProviderDefaultApiBase(providerId)).replace(/\/+$/, ""),
+    providerName: normalizeServiceProviderName(settings.providerName, apiBase, providerId) || getDefaultServiceProviderName(providerId),
+    apiBase,
   };
 }
 
@@ -161,7 +170,30 @@ async function startHttpServer() {
 }
 
 function settingsPath() {
-  return path.join(app.getPath("userData"), "settings.json");
+  return SETTINGS_FILE;
+}
+
+let settingsMigrated = false;
+
+async function ensureSettingsMigrated() {
+  if (settingsMigrated) return;
+  settingsMigrated = true;
+
+  try {
+    await fs.access(SETTINGS_FILE);
+    return;
+  } catch {
+    // Continue with legacy migration.
+  }
+
+  const legacyPath = path.join(app.getPath("userData"), "settings.json");
+  try {
+    const raw = await fs.readFile(legacyPath, "utf8");
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    await fs.writeFile(SETTINGS_FILE, raw, "utf8");
+  } catch {
+    // No legacy settings to migrate.
+  }
 }
 
 function appAssetPath(fileName: string) {
@@ -173,6 +205,7 @@ function windowIconPath() {
 }
 
 async function readStoredSettings(): Promise<StoredSettings | null> {
+  await ensureSettingsMigrated();
   try {
     const raw = await fs.readFile(settingsPath(), "utf8");
     return JSON.parse(raw) as StoredSettings;
@@ -249,7 +282,7 @@ async function saveSettings(settings: AgentSettings): Promise<AgentSettings> {
     ...secret
   };
 
-  await fs.mkdir(app.getPath("userData"), { recursive: true });
+  await fs.mkdir(DATA_DIR, { recursive: true });
   await fs.writeFile(settingsPath(), JSON.stringify(stored, null, 2), "utf8");
 
   return loadSettings();
@@ -368,7 +401,7 @@ ipcMain.handle("runtime:info", (): RuntimeInfo => ({
   surface: "desktop",
   platform: process.platform,
   version: app.getVersion(),
-  userDataPath: app.getPath("userData"),
+  userDataPath: DATA_DIR,
   webBaseUrl: getDesktopAppUrl(),
 }));
 

@@ -10,6 +10,7 @@ const sampleImage = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP
 const sampleAudio = Buffer.from("fake audio bytes").toString("base64");
 
 process.chdir(tempRoot);
+process.env.NEXO_DATA_DIR = path.join(tempRoot, ".nexo-data");
 
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async (input, init = {}) => {
@@ -54,6 +55,7 @@ globalThis.fetch = async (input, init = {}) => {
 
 const modelProfiles = await import(pathToFileURL(path.join(repoRoot, "dist-electron/electron/server/model-profiles.js")));
 const multimodal = await import(pathToFileURL(path.join(repoRoot, "dist-electron/electron/server/tools/multimodal.js")));
+const modelCall = await import(pathToFileURL(path.join(repoRoot, "dist-electron/electron/server/tools/model-call.js")));
 
 const discovered = await modelProfiles.discoverModels("https://provider.test/v1/", "good-key");
 assert.equal(discovered.length, 4);
@@ -163,19 +165,19 @@ await modelProfiles.saveModelProfile({
 const imageDataUrl = `data:image/png;base64,${sampleImage}`;
 const audioDataUrl = `data:audio/mpeg;base64,${sampleAudio}`;
 
-const visionOutput = await multimodal.analyzeImage({ prompt: "what is this?", images: [imageDataUrl] }, ctx);
+const visionOutput = await modelCall.invokeModel({ capability: "vision", prompt: "what is this?", images: [imageDataUrl] }, ctx);
 assert.match(visionOutput, /vision analysis ok/);
 
-const generatedImage = await multimodal.generateImage({ prompt: "draw a square" }, ctx);
+const generatedImage = await modelCall.invokeModel({ capability: "image_generation", prompt: "draw a square" }, ctx);
 assert.match(generatedImage, /\/uploads\/generated\/image-/);
 
-const editedImage = await multimodal.editImage({ prompt: "make it brighter", images: [imageDataUrl] }, ctx);
+const editedImage = await modelCall.invokeModel({ capability: "image_editing", prompt: "make it brighter", images: [imageDataUrl] }, ctx);
 assert.match(editedImage, /\/uploads\/generated\/edited-image-/);
 
-const transcript = await multimodal.transcribeAudio({ audio: audioDataUrl }, ctx);
+const transcript = await modelCall.invokeModel({ capability: "speech_to_text", audio: audioDataUrl }, ctx);
 assert.match(transcript, /transcript ok/);
 
-const speech = await multimodal.synthesizeSpeech({ input: "hello" }, ctx);
+const speech = await modelCall.invokeModel({ capability: "text_to_speech", input: "hello" }, ctx);
 assert.match(speech, /\/uploads\/generated\/speech-/);
 
 const generatedDir = path.join(tempRoot, ".nexo-data", "uploads", "generated");

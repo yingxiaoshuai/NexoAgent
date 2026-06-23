@@ -117,7 +117,7 @@ export const AppLayout: React.FC = () => {
       if (!origin) return;
       const nextWidth = Math.min(
         MAX_SESSION_SIDER_WIDTH,
-        Math.max(MIN_SESSION_SIDER_WIDTH, origin.startWidth + (event.clientX - origin.startX))
+        Math.max(MIN_SESSION_SIDER_WIDTH, origin.startWidth + (event.clientX - origin.startX)),
       );
       setSessionSiderWidth(nextWidth);
       if (nextWidth > MIN_SESSION_SIDER_WIDTH) {
@@ -212,13 +212,13 @@ export const AppLayout: React.FC = () => {
 
           <div style={{ flex: 1 }} />
 
-          <Tooltip title={lang === "zh" ? "Switch to English" : "切换到中文"} placement="right">
-            <div onClick={() => setLang(lang === "zh" ? "en" : "zh")} style={{ ...iconButtonStyle(false), fontSize: 11, fontWeight: 600 }}>
-              {lang === "zh" ? "EN" : "中"}
+          <Tooltip title={lang === "zh" ? t("switchToEnglish") : t("switchToChinese")} placement="right">
+            <div onClick={() => setLang(lang === "zh" ? "en" : "zh")} style={{ ...iconButtonStyle(false), fontSize: 11, fontWeight: 700 }}>
+              {lang === "zh" ? "EN" : "ZH"}
             </div>
           </Tooltip>
 
-          <Tooltip title={mode === "dark" ? "Light mode" : "Dark mode"} placement="right">
+          <Tooltip title={mode === "dark" ? t("lightMode") : t("darkMode")} placement="right">
             <div onClick={toggleTheme} style={iconButtonStyle(false)}>
               {mode === "dark" ? <SunOutlined /> : <MoonOutlined />}
             </div>
@@ -226,7 +226,7 @@ export const AppLayout: React.FC = () => {
 
           {navItem("settings", <SettingOutlined />, t("settings"))}
 
-          <Tooltip title="打开浏览器" placement="right">
+          <Tooltip title={t("openWebConsole")} placement="right">
             <Badge dot status="success">
               <div onClick={() => void openWebConsole()} style={iconButtonStyle(false)}>
                 <GlobalOutlined />

@@ -23,10 +23,10 @@ type CachedRuntime = {
 };
 
 const UI = {
-  connectFailed: "\u672a\u80fd\u8fde\u63a5\u5230 MCP \u670d\u52a1",
-  connectedButEmpty: "\u5df2\u8fde\u63a5\uff0c\u4f46\u672a\u53d1\u73b0\u53ef\u7528\u5de5\u5177",
-  unnamedServer: "\u672a\u547d\u540d\u670d\u52a1",
-  missingNameOrCommand: "\u670d\u52a1\u540d\u79f0\u548c\u547d\u4ee4\u4e0d\u80fd\u4e3a\u7a7a",
+  connectFailed: "Unable to connect to the MCP service.",
+  connectedButEmpty: "Connected, but no available tools were discovered.",
+  unnamedServer: "Unnamed service",
+  missingNameOrCommand: "Service name and command are required.",
 } as const;
 
 let cachedRuntime: CachedRuntime | null = null;
@@ -71,7 +71,7 @@ function buildFingerprint(servers: McpServerConfig[]) {
             ? Object.fromEntries(Object.entries(server.env).map(([key, value]) => [key, String(value)]))
             : undefined,
       }))
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((a, b) => a.name.localeCompare(b.name)),
   );
 }
 
@@ -128,7 +128,7 @@ function buildClientServerConfig(safeServers: SafeServerEntry[]) {
           delayMs: 1000,
         },
       },
-    ])
+    ]),
   );
 }
 
@@ -148,7 +148,7 @@ function createFallbackClient() {
 async function getServerConnectionState(
   client: MultiServerMCPClient,
   server: SafeServerEntry,
-  rawTools: DynamicStructuredTool[]
+  rawTools: DynamicStructuredTool[],
 ) {
   if (rawTools.length > 0) {
     return {
@@ -182,7 +182,7 @@ function buildServerStatus(
   server: SafeServerEntry,
   rawTools: DynamicStructuredTool[],
   connected: boolean,
-  error?: string
+  error?: string,
 ): McpServerStatus {
   const toolNames = rawTools.map((tool) => tool.name);
   if (toolNames.length > 0) {

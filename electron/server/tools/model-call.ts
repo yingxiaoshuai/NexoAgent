@@ -1,126 +1,102 @@
 import type { ToolExecutionContext } from "../types";
-import { findStoredModelProfile, findStoredModelProfileByCapability } from "../model-profiles";
+import { callChatCompletion, resolveModelConfigFromArgs, resolveThinkingRequestConfig } from "../model-runtime";
 import { getOptionalNumberArg, getOptionalStringArg, getStringArg } from "../utils";
 import { isModelCapability, type ModelCapability } from "../../../src/shared/types";
-import { resolveStoredModelContextBudget } from "../model-context";
+import { analyzeImage, editImage, generateImage, synthesizeSpeech, transcribeAudio } from "./multimodal";
 
-interface OpenAICompatibleResponse {
-  choices?: Array<{
-    message?: {
-      content?: string;
-    };
-  }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-  error?: {
-    message?: string;
-  };
-}
-
-async function resolveModelConfig(args: Record<string, unknown>, ctx: ToolExecutionContext) {
-  const profileQuery = getOptionalStringArg(args, "profile");
+function readCapability(args: Record<string, unknown>): ModelCapability | "" {
   const rawCapability = getOptionalStringArg(args, "capability");
-  const capability = rawCapability && isModelCapability(rawCapability) ? rawCapability : "";
-  if (rawCapability && !capability) {
+  if (!rawCapability) return "";
+  if (!isModelCapability(rawCapability)) {
     throw new Error(`Unknown model capability: ${rawCapability}`);
   }
+  return rawCapability;
+}
 
-  if (profileQuery && profileQuery !== "default") {
-    const profile = await findStoredModelProfile(profileQuery);
-    if (!profile) {
-      throw new Error(`Unknown model profile: ${profileQuery}`);
-    }
-    const budget = await resolveStoredModelContextBudget({ profile, settings: ctx.settings });
-
-    return {
-      name: profile.name,
-      apiBase: profile.apiBase,
-      apiKey: profile.apiKey,
-      model: profile.model,
-      temperature: profile.temperature ?? ctx.settings.temperature,
-      budget,
-    };
+function readStringList(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
   }
-
-  if (capability) {
-    const profile = await findStoredModelProfileByCapability(capability)
-      ?? (capability === "chat" ? await findStoredModelProfileByCapability("orchestration") : null);
-    if (profile) {
-      const budget = await resolveStoredModelContextBudget({ profile, settings: ctx.settings });
-      return {
-        name: profile.name,
-        apiBase: profile.apiBase,
-        apiKey: profile.apiKey,
-        model: profile.model,
-        temperature: profile.temperature ?? ctx.settings.temperature,
-        budget,
-      };
-    }
-    throw new Error(`No enabled model profile is configured for capability "${capability}". Configure a specialist model in Settings > Models.`);
+  if (typeof value === "string" && value.trim()) {
+    return value.split(",").map((item) => item.trim()).filter(Boolean);
   }
+  return [];
+}
 
-  if (!profileQuery || profileQuery === "default") {
-    const budget = await resolveStoredModelContextBudget({ settings: ctx.settings });
-    return {
-      name: "default",
-      apiBase: ctx.apiBase,
-      apiKey: ctx.apiKey,
-      model: ctx.settings.model,
-      temperature: ctx.settings.temperature,
-      budget,
-    };
+function inferCapability(args: Record<string, unknown>, explicitCapability: ModelCapability | ""): ModelCapability | "" {
+  if (explicitCapability) return explicitCapability;
+  if (readStringList(args.images ?? args.image ?? args.imageUrl ?? args.image_url).length > 0) {
+    return "vision";
   }
-
-  throw new Error(`Unable to resolve model profile: ${profileQuery}`);
+  if (getOptionalStringArg(args, "audio") || getOptionalStringArg(args, "audioUrl") || getOptionalStringArg(args, "audio_url")) {
+    return "speech_to_text";
+  }
+  if ((getOptionalStringArg(args, "input") || getOptionalStringArg(args, "text")) && (getOptionalStringArg(args, "voice") || getOptionalStringArg(args, "instructions"))) {
+    return "text_to_speech";
+  }
+  return "";
 }
 
 export async function invokeModel(args: Record<string, unknown>, ctx: ToolExecutionContext) {
-  const prompt = getStringArg(args, "prompt");
+  const explicitCapability = readCapability(args);
+  const capability = inferCapability(args, explicitCapability);
+
+  if (capability === "vision") {
+    const prompt = getOptionalStringArg(args, "prompt", "Describe the provided image.");
+    return analyzeImage({ ...args, prompt }, ctx);
+  }
+
+  if (capability === "image_generation") {
+    const prompt = getStringArg(args, "prompt");
+    return generateImage({ ...args, prompt }, ctx);
+  }
+
+  if (capability === "image_editing") {
+    const prompt = getStringArg(args, "prompt");
+    return editImage({ ...args, prompt }, ctx);
+  }
+
+  if (capability === "speech_to_text") {
+    return transcribeAudio(args, ctx);
+  }
+
+  if (capability === "text_to_speech") {
+    const input = getStringArg(args, "input", ["text", "prompt"]);
+    return synthesizeSpeech({ ...args, input }, ctx);
+  }
+
+  if (capability === "embedding") {
+    throw new Error("invoke_model does not support embedding output.");
+  }
+
+  const prompt = getStringArg(args, "prompt", ["input", "text"]);
   const system = getOptionalStringArg(args, "system");
   const maxTokens = Math.max(64, Math.min(8192, getOptionalNumberArg(args, "maxTokens", 1024)));
   const requestedTemperature = Math.max(0, Math.min(2, getOptionalNumberArg(args, "temperature", Number.NaN)));
-  const config = await resolveModelConfig(args, ctx);
+  const config = await resolveModelConfigFromArgs(args, ctx, { allowDefault: true });
 
   if (!config.apiKey.trim()) {
     throw new Error(`Model profile "${config.name}" does not have an API key.`);
   }
 
-  const response = await fetch(`${config.apiBase.replace(/\/+$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey.trim()}`,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      temperature: Number.isFinite(requestedTemperature) ? requestedTemperature : config.temperature,
-      max_tokens: maxTokens,
-      messages: [
-        ...(system ? [{ role: "system", content: system }] : []),
-        { role: "user", content: prompt },
-      ],
+  const result = await callChatCompletion(config, [
+    ...(system ? [{ role: "system" as const, content: system }] : []),
+    { role: "user" as const, content: prompt },
+  ], {
+    temperature: Number.isFinite(requestedTemperature) ? requestedTemperature : config.temperature,
+    maxTokens,
+    thinking: resolveThinkingRequestConfig(ctx.settings, config.model, {
+      thinkingEnabled: config.thinkingEnabled,
+      thinkingEffort: config.thinkingEffort,
     }),
   });
-
-  const data = await response.json() as OpenAICompatibleResponse;
-  if (!response.ok) {
-    throw new Error(data.error?.message ?? `Model call failed: ${response.status}`);
-  }
-
-  const content = data.choices?.[0]?.message?.content?.trim();
-  if (!content) {
-    throw new Error("Model call returned empty content.");
-  }
 
   return [
     `Profile: ${config.name}`,
     `Model: ${config.model}`,
-    ...(config.budget?.contextWindowTokens ? [`Context budget: window=${config.budget.contextWindowTokens}, reserved_output=${config.budget.reservedOutputTokens ?? 0}, source=${config.budget.contextWindowSource ?? "default"}`] : []),
-    ...(data.usage ? [`Usage: prompt=${data.usage.prompt_tokens ?? 0}, completion=${data.usage.completion_tokens ?? 0}, total=${data.usage.total_tokens ?? 0}`] : []),
+    ...(config.contextWindowTokens ? [`Context budget: window=${config.contextWindowTokens}, reserved_output=${config.reservedOutputTokens ?? 0}, source=${config.contextWindowSource ?? "default"}`] : []),
+    ...(result.usage ? [`Usage: prompt=${result.usage.prompt_tokens ?? 0}, completion=${result.usage.completion_tokens ?? 0}, total=${result.usage.total_tokens ?? 0}`] : []),
     "",
-    content,
+    result.content,
   ].join("\n");
 }

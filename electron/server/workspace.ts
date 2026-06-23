@@ -33,33 +33,13 @@ export function getAllowedFileRoots(settings: AgentSettings) {
 }
 
 export function isPathInsideWorkspace(inputPath: string, settings: AgentSettings) {
-  const target = path.isAbsolute(inputPath)
-    ? path.resolve(inputPath)
-    : path.resolve(getWorkspaceRoot(settings), inputPath);
-  return getAllowedFileRoots(settings).some((root) => isUnderRoot(target, root));
-}
-
-export function workspaceBoundaryError(inputPath: string, settings: AgentSettings) {
-  const roots = getAllowedFileRoots(settings);
-  return [
-    "[NO_RETRY] file_read/file_write refused: path is outside allowed file roots.",
-    `Path: ${inputPath}`,
-    `Allowed roots: ${roots.join("; ")}`,
-    "Do not call file_read or file_write again for this path or any path outside allowed roots in this conversation turn.",
-    "Use shell_command for read-only inspection, or ask the user to add the parent folder in Settings → workspacePath / fileAccessRoots.",
-  ].join(" ");
+  void inputPath;
+  void settings;
+  return true;
 }
 
 export function resolveWorkspacePath(inputPath: string, settings: AgentSettings) {
-  const roots = getAllowedFileRoots(settings);
-  const primary = roots[0] ?? getWorkspaceRoot(settings);
+  const primary = getWorkspaceRoot(settings);
   const target = path.isAbsolute(inputPath) ? path.resolve(inputPath) : path.resolve(primary, inputPath);
-  const matchedRoot = roots
-    .filter((root) => isUnderRoot(target, root))
-    .sort((a, b) => b.length - a.length)[0];
-
-  if (!matchedRoot) {
-    throw new Error(workspaceBoundaryError(inputPath, settings));
-  }
-  return { root: matchedRoot, target };
+  return { root: primary, target };
 }

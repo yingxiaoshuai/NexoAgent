@@ -14,9 +14,13 @@ interface OverflowMenuButtonProps {
   onItemClick: (key: string) => void;
   color?: string;
   tooltip?: string;
+  label?: React.ReactNode;
   size?: "small" | "middle" | "large";
   placement?: "bottomLeft" | "bottomRight" | "topLeft" | "topRight";
   stopPropagation?: boolean;
+  variant?: "text" | "outlined";
+  backgroundColor?: string;
+  borderColor?: string;
 }
 
 export const OverflowMenuButton: React.FC<OverflowMenuButtonProps> = ({
@@ -24,9 +28,13 @@ export const OverflowMenuButton: React.FC<OverflowMenuButtonProps> = ({
   onItemClick,
   color,
   tooltip,
+  label,
   size = "small",
   placement = "bottomRight",
   stopPropagation = true,
+  variant = "text",
+  backgroundColor,
+  borderColor,
 }) => {
   const menuItems = items.filter((item) => item && item.label) satisfies OverflowMenuItem[];
   if (menuItems.length === 0) return null;
@@ -48,13 +56,25 @@ export const OverflowMenuButton: React.FC<OverflowMenuButtonProps> = ({
     <Dropdown trigger={["click"]} placement={placement} menu={menu}>
       <Button
         size={size}
-        type="text"
+        type={variant === "outlined" ? "default" : "text"}
         icon={<MoreOutlined />}
         onClick={(event) => {
           if (stopPropagation) event.stopPropagation();
         }}
-        style={{ color, padding: "0 4px" }}
-      />
+        style={variant === "outlined"
+          ? {
+              color,
+              paddingInline: label ? 10 : 8,
+              borderRadius: 999,
+              borderColor,
+              background: backgroundColor,
+              fontWeight: 600,
+              boxShadow: "none",
+            }
+          : { color, padding: "0 4px" }}
+      >
+        {label}
+      </Button>
     </Dropdown>
   );
 

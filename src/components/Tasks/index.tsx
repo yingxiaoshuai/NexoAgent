@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Table, Button, Modal, Form, Input, Switch, Tag, message } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { apiGet, apiPost, apiDelete, apiPatch } from "../../services/api";
+import { useI18n } from "../../i18n";
 import { useTheme } from "../../theme";
 import { OverflowMenuButton } from "../Common/OverflowMenuButton";
 
@@ -17,11 +18,39 @@ interface Task {
 
 export default function Tasks() {
   const { colors } = useTheme();
+  const { lang, t } = useI18n();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Task | null>(null);
-  const [form] = Form.useForm();
+  const [form] = Form.useForm<Task>();
+
+  const ui = useMemo(
+    () => ({
+      title: lang === "zh" ? "\u5b9a\u65f6\u4efb\u52a1" : "Scheduled Tasks",
+      createTask: lang === "zh" ? "\u65b0\u5efa\u4efb\u52a1" : "New Task",
+      editTask: lang === "zh" ? "\u7f16\u8f91\u4efb\u52a1" : "Edit Task",
+      taskUpdated: lang === "zh" ? "\u4efb\u52a1\u5df2\u66f4\u65b0" : "Task updated.",
+      taskCreated: lang === "zh" ? "\u4efb\u52a1\u5df2\u521b\u5efa" : "Task created.",
+      taskDeleted: lang === "zh" ? "\u4efb\u52a1\u5df2\u5220\u9664" : "Task deleted.",
+      deleteConfirm: lang === "zh" ? "\u786e\u8ba4\u5220\u9664\u8fd9\u6761\u4efb\u52a1\uff1f" : "Delete this task?",
+      taskQueued: lang === "zh"
+        ? "\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u5b8c\u6210\u540e\u4f1a\u751f\u6210\u4e00\u6761\u4efb\u52a1\u4f1a\u8bdd\u3002"
+        : "Task submitted. A task session will appear when it finishes.",
+      name: lang === "zh" ? "\u540d\u79f0" : "Name",
+      prompt: lang === "zh" ? "\u63d0\u793a\u8bcd" : "Prompt",
+      status: lang === "zh" ? "\u72b6\u6001" : "Status",
+      lastRun: lang === "zh" ? "\u4e0a\u6b21\u8fd0\u884c" : "Last Run",
+      runNow: lang === "zh" ? "\u7acb\u5373\u8fd0\u884c" : "Run now",
+      enabled: lang === "zh" ? "\u542f\u7528\u4e2d" : "Enabled",
+      paused: lang === "zh" ? "\u5df2\u505c\u7528" : "Disabled",
+      nameRequired: lang === "zh" ? "\u8bf7\u8f93\u5165\u540d\u79f0" : "Please enter a name.",
+      cronRequired: lang === "zh" ? "\u8bf7\u8f93\u5165 Cron \u8868\u8fbe\u5f0f" : "Please enter a cron expression.",
+      promptRequired: lang === "zh" ? "\u8bf7\u8f93\u5165\u63d0\u793a\u8bcd" : "Please enter a prompt.",
+      cronHelp: lang === "zh" ? "\u4f8b\u5982\uff1a`0 9 * * *` \u8868\u793a\u6bcf\u5929 9 \u70b9\u6267\u884c" : "Example: `0 9 * * *` runs every day at 9:00.",
+    }),
+    [lang],
+  );
 
   const fetchTasks = async () => {
     setLoading(true);
@@ -40,7 +69,7 @@ export default function Tasks() {
   const openCreate = () => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ enabled: true });
+    form.setFieldsValue({ enabled: true } as Task);
     setModalOpen(true);
   };
 
@@ -57,22 +86,22 @@ export default function Tasks() {
     } else {
       await apiPost("/api/tasks", values);
     }
-    void message.success(editing ? "任务已更新" : "任务已创建");
+    void message.success(editing ? ui.taskUpdated : ui.taskCreated);
     setModalOpen(false);
     void fetchTasks();
   };
 
   const handleDelete = async (id: string) => {
     await apiDelete(`/api/tasks/${id}`);
-    void message.success("任务已删除");
+    void message.success(ui.taskDeleted);
     void fetchTasks();
   };
 
   const confirmDelete = (task: Task) => {
     Modal.confirm({
-      title: "确认删除这条任务？",
-      okText: "删除",
-      cancelText: "取消",
+      title: ui.deleteConfirm,
+      okText: t("delete"),
+      cancelText: t("cancel"),
       okButtonProps: { danger: true },
       onOk: async () => {
         await handleDelete(task.id);
@@ -82,12 +111,12 @@ export default function Tasks() {
 
   const handleRun = async (id: string) => {
     await apiPost(`/api/tasks/${id}/run`, {});
-    void message.success("任务已提交，完成后会生成一条任务会话");
+    void message.success(ui.taskQueued);
     void fetchTasks();
   };
 
   const columns = [
-    { title: "名称", dataIndex: "name", key: "name" },
+    { title: ui.name, dataIndex: "name", key: "name" },
     {
       title: "Cron",
       dataIndex: "cron",
@@ -107,33 +136,37 @@ export default function Tasks() {
       ),
     },
     {
-      title: "提示词",
+      title: ui.prompt,
       dataIndex: "prompt",
       key: "prompt",
       render: (value: string) => (value.length > 40 ? `${value.slice(0, 40)}...` : value),
     },
     {
-      title: "状态",
+      title: ui.status,
       dataIndex: "enabled",
       key: "enabled",
-      render: (enabled: boolean) => <Tag color={enabled ? "green" : "default"}>{enabled ? "启用中" : "已停用"}</Tag>,
+      render: (enabled: boolean) => <Tag color={enabled ? "green" : "default"}>{enabled ? ui.enabled : ui.paused}</Tag>,
     },
     {
-      title: "上次运行",
+      title: ui.lastRun,
       dataIndex: "lastRun",
       key: "lastRun",
       render: (value?: string) => (value ? dayjs(value).format("YYYY-MM-DD HH:mm:ss") : "-"),
     },
     {
-      title: "操作",
+      title: t("actions"),
       key: "actions",
       render: (_: unknown, record: Task) => (
         <OverflowMenuButton
           color={colors.textSecondary}
+          label={lang === "zh" ? "\u64cd\u4f5c" : "Actions"}
+          variant="outlined"
+          backgroundColor={colors.bgTertiary}
+          borderColor={colors.borderStrong}
           items={[
-            { key: "run", label: "立即运行" },
-            { key: "edit", label: "编辑" },
-            { key: "delete", label: "删除", danger: true },
+            { key: "run", label: ui.runNow },
+            { key: "edit", label: t("edit") },
+            { key: "delete", label: t("delete"), danger: true },
           ]}
           onItemClick={(key) => {
             if (key === "run") {
@@ -156,9 +189,9 @@ export default function Tasks() {
   return (
     <div style={{ padding: 24, background: colors.bgPrimary, minHeight: "100%", color: colors.textPrimary }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <h2 style={{ color: colors.textPrimary, margin: 0 }}>定时任务</h2>
+        <h2 style={{ color: colors.textPrimary, margin: 0 }}>{ui.title}</h2>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-          新建任务
+          {ui.createTask}
         </Button>
       </div>
 
@@ -167,29 +200,29 @@ export default function Tasks() {
       </div>
 
       <Modal
-        title={editing ? "编辑任务" : "新建任务"}
+        title={editing ? ui.editTask : ui.createTask}
         open={modalOpen}
         onOk={() => void handleSubmit()}
         onCancel={() => setModalOpen(false)}
-        okText="保存"
-        cancelText="取消"
+        okText={t("save")}
+        cancelText={t("cancel")}
       >
         <Form form={form} layout="vertical">
-          <Form.Item name="name" label="名称" rules={[{ required: true, message: "请输入名称" }]}>
+          <Form.Item name="name" label={ui.name} rules={[{ required: true, message: ui.nameRequired }]}>
             <Input />
           </Form.Item>
           <Form.Item
             name="cron"
-            label="Cron 表达式"
-            rules={[{ required: true, message: "请输入 Cron 表达式" }]}
-            extra="例如：0 9 * * * 表示每天 9 点执行"
+            label="Cron"
+            rules={[{ required: true, message: ui.cronRequired }]}
+            extra={ui.cronHelp}
           >
             <Input placeholder="0 9 * * *" />
           </Form.Item>
-          <Form.Item name="prompt" label="提示词" rules={[{ required: true, message: "请输入提示词" }]}>
+          <Form.Item name="prompt" label={ui.prompt} rules={[{ required: true, message: ui.promptRequired }]}>
             <Input.TextArea rows={4} />
           </Form.Item>
-          <Form.Item name="enabled" label="启用" valuePropName="checked">
+          <Form.Item name="enabled" label={t("enable")} valuePropName="checked">
             <Switch />
           </Form.Item>
         </Form>

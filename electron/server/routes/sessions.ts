@@ -16,17 +16,17 @@ export function registerSessionRoutes(app: Application) {
     await ensureSessionsLoaded();
     const id = randomUUID();
     const now = new Date().toISOString();
-    const s: Session = { id, title: "\u65b0\u5bf9\u8bdd", messages: [], createdAt: now, updatedAt: now };
-    getSessionsMap().set(id, s);
+    const session: Session = { id, title: "New Chat", messages: [], createdAt: now, updatedAt: now };
+    getSessionsMap().set(id, session);
     void saveSessionsToDisk();
-    res.json(s);
+    res.json(session);
   });
 
   app.get("/api/sessions/:id/messages", async (req, res) => {
     await ensureSessionsLoaded();
-    const s = getSessionsMap().get(req.params.id);
-    if (!s) return res.status(404).json({ error: "\u4f1a\u8bdd\u4e0d\u5b58\u5728" });
-    return res.json(s.messages);
+    const session = getSessionsMap().get(req.params.id);
+    if (!session) return res.status(404).json({ error: "Session not found." });
+    return res.json(session.messages);
   });
 
   app.delete("/api/sessions/:id", async (req, res) => {
@@ -38,12 +38,12 @@ export function registerSessionRoutes(app: Application) {
 
   app.patch("/api/sessions/:id", async (req, res) => {
     await ensureSessionsLoaded();
-    const s = getSessionsMap().get(req.params.id);
-    if (!s) return res.status(404).json({ error: "\u4f1a\u8bdd\u4e0d\u5b58\u5728" });
+    const session = getSessionsMap().get(req.params.id);
+    if (!session) return res.status(404).json({ error: "Session not found." });
     const { title } = req.body as { title?: string };
     if (title) {
-      s.title = title;
-      s.updatedAt = new Date().toISOString();
+      session.title = title;
+      session.updatedAt = new Date().toISOString();
       void saveSessionsToDisk();
     }
     res.json({ ok: true });

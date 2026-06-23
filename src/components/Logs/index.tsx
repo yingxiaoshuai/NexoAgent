@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Space, Tag } from "antd";
 import { PauseCircleOutlined, PlayCircleOutlined, DeleteOutlined } from "@ant-design/icons";
 import { getApiBase } from "../../services/api";
+import { useI18n } from "../../i18n";
 import { useTheme } from "../../theme";
 
 function getColor(line: string) {
@@ -13,10 +14,20 @@ function getColor(line: string) {
 
 export default function Logs() {
   const { colors } = useTheme();
+  const { lang, t } = useI18n();
   const [lines, setLines] = useState<string[]>([]);
   const [paused, setPaused] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const ui = useMemo(
+    () => ({
+      title: lang === "zh" ? "\u8fd0\u884c\u65e5\u5fd7" : "Runtime Logs",
+      live: lang === "zh" ? "\u5b9e\u65f6\u4e2d" : "Live",
+      paused: lang === "zh" ? "\u5df2\u6682\u505c" : "Paused",
+    }),
+    [lang],
+  );
 
   function connect() {
     esRef.current?.close();
@@ -62,18 +73,18 @@ export default function Logs() {
         }}
       >
         <Space align="center" size={12}>
-          <span style={{ fontWeight: 600, fontSize: 18, color: colors.textPrimary }}>运行日志</span>
-          <Tag color={paused ? "gold" : "green"}>{paused ? "已暂停" : "实时中"}</Tag>
+          <span style={{ fontWeight: 600, fontSize: 18, color: colors.textPrimary }}>{ui.title}</span>
+          <Tag color={paused ? "gold" : "green"}>{paused ? ui.paused : ui.live}</Tag>
         </Space>
         <Space size={8}>
           <Button icon={<DeleteOutlined />} onClick={handleClear}>
-            清空
+            {t("clear")}
           </Button>
           <Button
             icon={paused ? <PlayCircleOutlined /> : <PauseCircleOutlined />}
             onClick={handlePauseResume}
           >
-            {paused ? "继续" : "暂停"}
+            {paused ? t("resumeStream") : t("pauseStream")}
           </Button>
         </Space>
       </div>

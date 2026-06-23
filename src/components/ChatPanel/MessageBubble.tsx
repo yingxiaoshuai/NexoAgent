@@ -10,6 +10,7 @@ import type { ToolCallEvent } from "./ToolCallSteps";
 import type { MessageBlock } from "../../store/chat";
 import { getApiBase } from "../../services/api";
 import { useTheme, type ThemeColors } from "../../theme";
+import { useI18n } from "../../i18n";
 import "highlight.js/styles/github-dark.css";
 
 interface Props {
@@ -20,8 +21,8 @@ interface Props {
   attachments?: ChatMessage["attachments"];
 }
 
-const STREAM_CURSOR = "▋";
-const DSML_TAG_PATTERN = String.raw`(?:\|\|DSML\|\||｜｜DSML｜｜|锝滐綔DSML锝滐綔|閿濇粣缍擠SML閿濇粣缍?)`;
+const STREAM_CURSOR = "|";
+const DSML_TAG_PATTERN = String.raw`(?:\|\|DSML\|\||锝滐綔DSML锝滐綔|閿濇粣缍擠SML閿濇粣缍攟闁挎繃绮ｇ紞鎿燬ML闁挎繃绮ｇ紞?)`;
 const DSML_TOOL_BLOCK_RE = new RegExp(String.raw`<\s*${DSML_TAG_PATTERN}tool_calls\s*>[\s\S]*?<\/\s*${DSML_TAG_PATTERN}tool_calls\s*>`, "g");
 const DSML_TOOL_START_RE = new RegExp(String.raw`<\s*${DSML_TAG_PATTERN}tool_calls\s*>`);
 const DSML_ANY_TAG_RE = new RegExp(String.raw`<\/?\s*${DSML_TAG_PATTERN}(?:tool_calls|invoke|parameter)\b[^>]*>`, "g");
@@ -86,14 +87,14 @@ function extractUploadArtifacts(content: string) {
     });
 }
 
-function getMessageStatusMeta(status: ChatMessage["status"]) {
+function getMessageStatusMeta(status: ChatMessage["status"], t: ReturnType<typeof useI18n>["t"]) {
   switch (status) {
     case "failed":
-      return { color: "error" as const, label: "执行失败" };
+      return { color: "error" as const, label: t("failedExecution") };
     case "interrupted":
-      return { color: "warning" as const, label: "已中断" };
+      return { color: "warning" as const, label: t("interrupted") };
     case "needs_input":
-      return { color: "processing" as const, label: "需要继续" };
+      return { color: "processing" as const, label: t("needsInput") };
     default:
       return null;
   }
@@ -101,13 +102,14 @@ function getMessageStatusMeta(status: ChatMessage["status"]) {
 
 export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, blocks }) => {
   const { colors } = useTheme();
+  const { t } = useI18n();
   const isUser = message.role === "user";
   const toolMap = new Map((toolCalls ?? []).map((toolCall) => [toolCall.id, toolCall]));
   const hasBlocks = !isUser && Boolean(blocks?.length);
   const apiBase = getApiBase();
   const safeContent = !isUser ? stripDsmlArtifacts(message.content) : message.content;
   const generatedArtifacts = !isUser ? extractUploadArtifacts(safeContent) : [];
-  const statusMeta = !isUser ? getMessageStatusMeta(message.status) : null;
+  const statusMeta = !isUser ? getMessageStatusMeta(message.status, t) : null;
 
   return (
     <div
@@ -130,6 +132,7 @@ export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, 
             <img
               key={index}
               src={apiBase + attachment.url}
+              alt={attachment.name}
               style={{ maxWidth: 200, borderRadius: 8, marginBottom: 6, display: "block", cursor: "pointer" }}
               onClick={() => window.open(apiBase + attachment.url)}
             />
@@ -171,7 +174,7 @@ export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, 
                 {attachment.name}
               </a>
             </div>
-          )
+          ),
         )}
         <div
           style={{
@@ -239,7 +242,7 @@ export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, 
                   </div>
                   <audio controls src={apiBase + artifact.url} style={{ width: "100%" }} />
                 </div>
-              )
+              ),
             )}
           </div>
         ) : null}

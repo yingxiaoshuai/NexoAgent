@@ -8,6 +8,19 @@ import { useI18n } from "../../i18n";
 
 const { Text } = Typography;
 
+function formatSessionTitle(title: string, newChatLabel: string, tasksLabel: string) {
+  if (title === "New Chat" || title === "\u65b0\u5bf9\u8bdd") {
+    return newChatLabel;
+  }
+  if (title.startsWith("[Task] ")) {
+    return `[${tasksLabel}] ${title.slice(7)}`;
+  }
+  if (title.startsWith("[\u4efb\u52a1] ")) {
+    return `[${tasksLabel}] ${title.slice(5)}`;
+  }
+  return title;
+}
+
 const SessionItem: React.FC<{ session: SessionMeta; active: boolean }> = ({ session, active }) => {
   const { selectSession, deleteSession, renameSession } = useChatStore();
   const { colors } = useTheme();
@@ -49,20 +62,33 @@ const SessionItem: React.FC<{ session: SessionMeta; active: boolean }> = ({ sess
       className="session-row"
       onClick={() => !editing && void selectSession(session.id)}
       style={{
-        display: "flex", alignItems: "center", gap: 6, padding: "8px 10px",
-        borderRadius: 8, cursor: "pointer", marginBottom: 2,
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "8px 10px",
+        borderRadius: 8,
+        cursor: "pointer",
+        marginBottom: 2,
         background: active ? colors.bgTertiary : "transparent",
         transition: "background 0.15s",
       }}
-      onMouseEnter={(e) => { if (!active) (e.currentTarget as HTMLDivElement).style.background = colors.hoverBg; }}
-      onMouseLeave={(e) => { if (!active) (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+      onMouseEnter={(event) => {
+        if (!active) {
+          event.currentTarget.style.background = colors.hoverBg;
+        }
+      }}
+      onMouseLeave={(event) => {
+        if (!active) {
+          event.currentTarget.style.background = "transparent";
+        }
+      }}
     >
       {editing ? (
         <>
           <Input
             size="small"
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(event) => setTitle(event.target.value)}
             onPressEnter={confirmRename}
             autoFocus
             style={{
@@ -76,10 +102,8 @@ const SessionItem: React.FC<{ session: SessionMeta; active: boolean }> = ({ sess
         </>
       ) : (
         <>
-          <Text
-            ellipsis style={{ flex: 1, color: active ? colors.textPrimary : colors.textMuted, fontSize: 13 }}
-          >
-            {session.title}
+          <Text ellipsis style={{ flex: 1, color: active ? colors.textPrimary : colors.textMuted, fontSize: 13 }}>
+            {formatSessionTitle(session.title, t("newChat"), t("tasks"))}
           </Text>
           <div style={{ display: "flex", gap: 2, opacity: 1 }} className="session-actions">
             <OverflowMenuButton
@@ -105,11 +129,9 @@ interface SessionListProps {
 export const SessionList: React.FC<SessionListProps> = ({ collapsed, onToggleWidth }) => {
   const { sessions, activeSessionId, newSession } = useChatStore();
   const { colors } = useTheme();
-  const { lang, t } = useI18n();
+  const { t } = useI18n();
 
-  const widthTooltip = collapsed
-    ? (lang === "zh" ? "展开历史记录" : "Expand history")
-    : (lang === "zh" ? "折叠历史记录" : "Collapse history");
+  const widthTooltip = collapsed ? t("expandHistory") : t("collapseHistory");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -153,8 +175,8 @@ export const SessionList: React.FC<SessionListProps> = ({ collapsed, onToggleWid
       </div>
       {!collapsed && (
         <div style={{ flex: 1, overflowY: "auto", padding: "0 6px" }}>
-          {sessions.map((s) => (
-            <SessionItem key={s.id} session={s} active={s.id === activeSessionId} />
+          {sessions.map((session) => (
+            <SessionItem key={session.id} session={session} active={session.id === activeSessionId} />
           ))}
         </div>
       )}

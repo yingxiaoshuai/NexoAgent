@@ -3,6 +3,7 @@ import { List, Button, Popconfirm, Empty, Typography, Space, Tag, Tabs, DatePick
 import { ClearOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { apiGet, apiDelete, apiPost } from "../../services/api";
+import { useI18n } from "../../i18n";
 import { useTheme } from "../../theme";
 import { OverflowMenuButton } from "../Common/OverflowMenuButton";
 
@@ -23,40 +24,13 @@ interface MemoryEntry {
   metadata?: Record<string, unknown>;
 }
 
-const KIND_META: Record<MemoryKind, { label: string; description: string; color: string }> = {
-  daily: {
-    label: "每日记忆",
-    description: "按自然日保存对话中抽取的事实，作为梦境整合和召回的基础。",
-    color: "green",
-  },
-  dream: {
-    label: "梦境记忆",
-    description: "把某一天的记忆汇总成可召回的梦境记录，帮助后续回答连接上下文。",
-    color: "magenta",
-  },
-  long_term: {
-    label: "长期记忆",
-    description: "保存跨对话仍然有效的事实，并参与语义召回。",
-    color: "blue",
-  },
-  script: {
-    label: "脚本记忆",
-    description: "保存流程运行状态和关键数据，保证脚本多次运行时结果一致。",
-    color: "purple",
-  },
-};
-
-const MEMORY_TABS = (Object.keys(KIND_META) as MemoryKind[]).map((key) => ({
-  key,
-  label: KIND_META[key].label,
-}));
-
 function dayToKey(day: Dayjs | null) {
   return day ? day.format("YYYYMMDD") : "";
 }
 
 export const MemoryPanel: React.FC = () => {
   const { colors } = useTheme();
+  const { lang, t } = useI18n();
   const [kind, setKind] = useState<MemoryKind>("daily");
   const [day, setDay] = useState<Dayjs | null>(null);
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
@@ -64,6 +38,50 @@ export const MemoryPanel: React.FC = () => {
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+
+  const ui = useMemo(() => ({
+    allDates: lang === "zh" ? "\u5168\u90e8\u65e5\u671f" : "All dates",
+    searchMemory: lang === "zh" ? "\u641c\u7d22\u8bb0\u5fc6" : "Search memory",
+    regenerateDream: lang === "zh" ? "\u91cd\u65b0\u751f\u6210" : "Regenerate",
+    clearCurrent: lang === "zh" ? "\u6e05\u7a7a" : "Clear",
+    noMemory: lang === "zh" ? "\u8fd8\u6ca1\u6709\u8bb0\u5fc6" : "No memories yet",
+    deleteConfirm: lang === "zh" ? "\u5220\u9664\u8fd9\u6761\u8bb0\u5fc6\uff1f" : "Delete this memory?",
+    clearConfirm: (label: string) =>
+      lang === "zh" ? `\u6e05\u7a7a\u5f53\u524d\u7b5b\u9009\u4e0b\u7684${label}\uff1f` : `Clear the current ${label} filter?`,
+    dreamRegenerated: lang === "zh" ? "\u68a6\u5883\u5df2\u91cd\u65b0\u751f\u6210" : "Dream memory regenerated.",
+    dreamGenerateFailed: lang === "zh" ? "\u68a6\u5883\u751f\u6210\u5931\u8d25" : "Failed to regenerate the dream memory.",
+    dailyLabel: lang === "zh" ? "\u6bcf\u65e5\u8bb0\u5fc6" : "Daily",
+    dailyDescription: lang === "zh"
+      ? "\u6309\u81ea\u7136\u65e5\u4fdd\u5b58\u5bf9\u8bdd\u4e2d\u62bd\u53d6\u7684\u4e8b\u5b9e\uff0c\u4f5c\u4e3a\u68a6\u5883\u6574\u5408\u548c\u53ec\u56de\u7684\u57fa\u7840\u3002"
+      : "Facts extracted from conversations and stored by day.",
+    dreamLabel: lang === "zh" ? "\u68a6\u5883\u8bb0\u5fc6" : "Dream",
+    dreamDescription: lang === "zh"
+      ? "\u628a\u67d0\u4e00\u5929\u7684\u8bb0\u5fc6\u603b\u7ed3\u4e3a\u53ef\u53ec\u56de\u7684\u68a6\u5883\u8bb0\u5f55\uff0c\u5e2e\u52a9\u540e\u7eed\u56de\u7b54\u8fde\u63a5\u4e0a\u4e0b\u6587\u3002"
+      : "A synthesized daily summary for future recall.",
+    longTermLabel: lang === "zh" ? "\u957f\u671f\u8bb0\u5fc6" : "Long-term",
+    longTermDescription: lang === "zh"
+      ? "\u4fdd\u5b58\u8de8\u5bf9\u8bdd\u4ecd\u7136\u6709\u6548\u7684\u4e8b\u5b9e\uff0c\u5e76\u53c2\u4e0e\u8bed\u4e49\u53ec\u56de\u3002"
+      : "Facts that remain useful across conversations.",
+    scriptLabel: lang === "zh" ? "\u811a\u672c\u8bb0\u5fc6" : "Script",
+    scriptDescription: lang === "zh"
+      ? "\u4fdd\u5b58\u6d41\u7a0b\u8fd0\u884c\u72b6\u6001\u548c\u5173\u952e\u6570\u636e\uff0c\u4fdd\u8bc1\u811a\u672c\u591a\u6b21\u8fd0\u884c\u65f6\u7ed3\u679c\u4e00\u81f4\u3002"
+      : "State and data that help scripted workflows stay consistent.",
+  }), [lang]);
+
+  const kindMeta: Record<MemoryKind, { label: string; description: string; color: string }> = useMemo(
+    () => ({
+      daily: { label: ui.dailyLabel, description: ui.dailyDescription, color: "green" },
+      dream: { label: ui.dreamLabel, description: ui.dreamDescription, color: "magenta" },
+      long_term: { label: ui.longTermLabel, description: ui.longTermDescription, color: "blue" },
+      script: { label: ui.scriptLabel, description: ui.scriptDescription, color: "purple" },
+    }),
+    [ui],
+  );
+
+  const memoryTabs = (Object.keys(kindMeta) as MemoryKind[]).map((key) => ({
+    key,
+    label: kindMeta[key].label,
+  }));
 
   const dayKey = useMemo(() => dayToKey(day), [day]);
 
@@ -90,9 +108,9 @@ export const MemoryPanel: React.FC = () => {
 
   const confirmDelete = (item: MemoryEntry) => {
     Modal.confirm({
-      title: "删除这条记忆？",
-      okText: "删除",
-      cancelText: "取消",
+      title: ui.deleteConfirm,
+      okText: t("delete"),
+      cancelText: t("cancel"),
       okButtonProps: { danger: true },
       onOk: async () => {
         await del(item.id);
@@ -128,17 +146,17 @@ export const MemoryPanel: React.FC = () => {
     setRegenerating(true);
     try {
       await apiPost(`/api/memory/dream/${dayKey}/regenerate`, {});
-      message.success("梦境已重新生成");
+      message.success(ui.dreamRegenerated);
       setKind("dream");
       await load();
     } catch (error) {
-      message.warning(error instanceof Error ? error.message : "梦境生成失败");
+      message.warning(error instanceof Error ? error.message : ui.dreamGenerateFailed);
     } finally {
       setRegenerating(false);
     }
   };
 
-  const meta = KIND_META[kind];
+  const meta = kindMeta[kind];
   const groupedEntries = useMemo(() => {
     const groups = new Map<string, MemoryEntry[]>();
     for (const entry of entries) {
@@ -153,31 +171,31 @@ export const MemoryPanel: React.FC = () => {
     <div style={{ padding: "24px 32px", maxWidth: 980, color: colors.textPrimary }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
         <Space size={8} wrap>
-          <DatePicker value={day} onChange={setDay} allowClear format="YYYY-MM-DD" placeholder="全部日期" />
+          <DatePicker value={day} onChange={setDay} allowClear format="YYYY-MM-DD" placeholder={ui.allDates} />
           <Input.Search
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onSearch={() => void runSearch()}
-            placeholder="搜索记忆"
+            placeholder={ui.searchMemory}
             loading={searching}
             enterButton={<SearchOutlined />}
             style={{ width: 260 }}
           />
           {kind === "dream" && dayKey && (
             <Button icon={<ReloadOutlined />} loading={regenerating} onClick={() => void regenerateDream()}>
-              重新生成
+              {ui.regenerateDream}
             </Button>
           )}
         </Space>
         {entries.length > 0 && (
           <Popconfirm
-            title={`清空当前筛选下的${meta.label}？`}
+            title={ui.clearConfirm(meta.label)}
             onConfirm={() => void clearAll()}
-            okText="清空"
-            cancelText="取消"
+            okText={ui.clearCurrent}
+            cancelText={t("cancel")}
           >
             <Button icon={<ClearOutlined />} size="small" danger>
-              清空
+              {ui.clearCurrent}
             </Button>
           </Popconfirm>
         )}
@@ -190,17 +208,17 @@ export const MemoryPanel: React.FC = () => {
             {entries.length}
           </Tag>
         </span>
-        <Tag color="default">{dayKey || "全部日期"}</Tag>
+        <Tag color="default">{dayKey || ui.allDates}</Tag>
       </div>
 
-      <Tabs activeKey={kind} onChange={(key) => setKind(key as MemoryKind)} items={MEMORY_TABS} />
+      <Tabs activeKey={kind} onChange={(key) => setKind(key as MemoryKind)} items={memoryTabs} />
 
       <Text style={{ color: colors.textSecondary, fontSize: 13, display: "block", marginBottom: 16 }}>
         {meta.description}
       </Text>
 
       {entries.length === 0 && !loading ? (
-        <Empty description={<span style={{ color: colors.textSecondary }}>还没有记忆</span>} />
+        <Empty description={<span style={{ color: colors.textSecondary }}>{ui.noMemory}</span>} />
       ) : (
         <div>
           {loading ? (
@@ -218,7 +236,7 @@ export const MemoryPanel: React.FC = () => {
                 }}
               >
                 <Tag color="default">{dayjs(groupDay, "YYYYMMDD").format("YYYY-MM-DD")}</Tag>
-                <Text style={{ color: colors.textSecondary, fontSize: 12 }}>{groupItems.length} 条</Text>
+                <Text style={{ color: colors.textSecondary, fontSize: 12 }}>{t("itemCount", { count: groupItems.length })}</Text>
               </div>
               <List
                 dataSource={groupItems}
@@ -229,7 +247,7 @@ export const MemoryPanel: React.FC = () => {
                       <OverflowMenuButton
                         key="more"
                         color={colors.textMuted}
-                        items={[{ key: "delete", label: "删除", danger: true }]}
+                        items={[{ key: "delete", label: t("delete"), danger: true }]}
                         onItemClick={(key) => {
                           if (key === "delete") confirmDelete(item);
                         }}
@@ -238,7 +256,7 @@ export const MemoryPanel: React.FC = () => {
                   >
                     <Space direction="vertical" size={4} style={{ flex: 1 }}>
                       <Space size={6} wrap>
-                        <Tag color={KIND_META[item.kind].color}>{KIND_META[item.kind].label}</Tag>
+                        <Tag color={kindMeta[item.kind].color}>{kindMeta[item.kind].label}</Tag>
                         <Tag color="default">{item.dayKey}</Tag>
                         {item.key && <Tag color="default">{item.key}</Tag>}
                         {item.scope && <Tag color="geekblue">{item.scope}</Tag>}

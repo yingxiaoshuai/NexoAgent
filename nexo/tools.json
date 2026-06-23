@@ -1,321 +1,160 @@
 {
-  "version": 1,
+  "version": 2,
   "defaultEnabled": [
-    "web_search",
-    "http_request",
+    "shell_command",
     "invoke_model",
-    "analyze_image",
-    "generate_image",
-    "edit_image",
-    "transcribe_audio",
-    "synthesize_speech",
-    "calculator",
-    "file_read",
-    "file_write",
-    "recall_memory",
-    "search_skills",
-    "create_skill",
-    "install_skill",
-    "create_scheduled_task",
-    "shell_command"
+    "recall_memory"
   ],
   "tools": [
-    {
-      "name": "web_search",
-      "label": "联网搜索",
-      "group": "研究",
-      "description": "Search the web for recent information and return titles, links, and snippets.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "query": { "type": "string", "description": "search query" },
-          "count": { "type": "number", "description": "number of results, 1-10" }
-        },
-        "required": ["query"]
-      }
-    },
-    {
-      "name": "http_request",
-      "label": "HTTP 请求",
-      "group": "系统",
-      "description": "Send an HTTP request and return response status, headers, and body preview.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "url": { "type": "string", "description": "full http or https URL" },
-          "method": { "type": "string", "description": "GET, POST, PUT, PATCH, DELETE, or HEAD" },
-          "headers": { "type": "object", "description": "optional request headers" },
-          "body": { "description": "optional string or JSON body" },
-          "timeoutMs": { "type": "number", "description": "request timeout in milliseconds, 1000-30000" }
-        },
-        "required": ["url"]
-      }
-    },
-    {
-      "name": "invoke_model",
-      "label": "调用模型",
-      "group": "模型",
-      "description": "Call the default model or a configured model profile for a specialized sub-task.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "profile": { "type": "string", "description": "profile id or name, or default" },
-          "capability": {
-            "type": "string",
-            "description": "optional required capability: orchestration, chat, vision, image_generation, image_editing, speech_to_text, text_to_speech, or embedding"
-          },
-          "prompt": { "type": "string", "description": "user prompt for the model" },
-          "system": { "type": "string", "description": "optional system instruction" },
-          "temperature": { "type": "number", "description": "optional temperature override" },
-          "maxTokens": { "type": "number", "description": "optional max output tokens" }
-        },
-        "required": ["prompt"]
-      }
-    },
-    {
-      "name": "analyze_image",
-      "label": "Analyze Image",
-      "group": "model",
-      "description": "Analyze one or more image uploads, URLs, or data URLs with a configured vision-capable specialist model. Use this for image recognition and visual question answering.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "images": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "image URLs, /uploads paths, or data URLs"
-          },
-          "prompt": { "type": "string", "description": "question or instruction for the image analysis" },
-          "detail": { "type": "string", "description": "optional image detail: auto, low, high, or original" },
-          "profile": { "type": "string", "description": "optional profile id or name override" },
-          "maxTokens": { "type": "number", "description": "optional max output tokens" }
-        },
-        "required": ["images", "prompt"]
-      }
-    },
-    {
-      "name": "generate_image",
-      "label": "Generate Image",
-      "group": "model",
-      "description": "Generate image artifacts from a text prompt using a configured image-generation specialist model.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "prompt": { "type": "string", "description": "image generation prompt" },
-          "n": { "type": "number", "description": "number of images, 1-10" },
-          "size": { "type": "string", "description": "optional size such as 1024x1024, 1024x1536, or 1536x1024" },
-          "quality": { "type": "string", "description": "optional quality such as low, medium, high, standard, or hd" },
-          "background": { "type": "string", "description": "optional background mode when supported" },
-          "outputFormat": { "type": "string", "description": "optional output format such as png, jpeg, or webp" },
-          "profile": { "type": "string", "description": "optional profile id or name override" }
-        },
-        "required": ["prompt"]
-      }
-    },
-    {
-      "name": "edit_image",
-      "label": "Edit Image",
-      "group": "model",
-      "description": "Edit source image uploads, URLs, or data URLs with a prompt using a configured image-editing specialist model.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "images": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "source image URLs, /uploads paths, or data URLs"
-          },
-          "prompt": { "type": "string", "description": "edit instruction" },
-          "n": { "type": "number", "description": "number of outputs, 1-10" },
-          "size": { "type": "string", "description": "optional output size" },
-          "quality": { "type": "string", "description": "optional output quality" },
-          "background": { "type": "string", "description": "optional background mode when supported" },
-          "inputFidelity": { "type": "string", "description": "optional input fidelity: low or high" },
-          "outputFormat": { "type": "string", "description": "optional output format such as png, jpeg, or webp" },
-          "profile": { "type": "string", "description": "optional profile id or name override" }
-        },
-        "required": ["images", "prompt"]
-      }
-    },
-    {
-      "name": "transcribe_audio",
-      "label": "Transcribe Audio",
-      "group": "model",
-      "description": "Transcribe an audio upload, URL, or data URL using a configured speech-to-text specialist model.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "audio": { "type": "string", "description": "audio URL, /uploads path, or data URL" },
-          "prompt": { "type": "string", "description": "optional transcription prompt or context" },
-          "profile": { "type": "string", "description": "optional profile id or name override" }
-        },
-        "required": ["audio"]
-      }
-    },
-    {
-      "name": "synthesize_speech",
-      "label": "Synthesize Speech",
-      "group": "model",
-      "description": "Generate an audio artifact from text using a configured text-to-speech specialist model.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "input": { "type": "string", "description": "text to convert to speech" },
-          "voice": { "type": "string", "description": "optional voice name, defaults to alloy" },
-          "instructions": { "type": "string", "description": "optional style or delivery instruction" },
-          "profile": { "type": "string", "description": "optional profile id or name override" }
-        },
-        "required": ["input"]
-      }
-    },
-    {
-      "name": "calculator",
-      "label": "计算器",
-      "group": "系统",
-      "description": "Evaluate a math expression and return the result.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "expression": { "type": "string", "description": "for example: 2+2" }
-        },
-        "required": ["expression"]
-      }
-    },
-    {
-      "name": "file_read",
-      "label": "读取文件",
-      "group": "系统",
-      "description": "Read a UTF-8 file or list a directory only when the path is inside allowed file roots. If outside, do not call — use shell_command.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "workspace-relative path or absolute path under an allowed file root" }
-        },
-        "required": ["path"]
-      }
-    },
-    {
-      "name": "file_write",
-      "label": "写入文件",
-      "group": "系统",
-      "description": "Write UTF-8 content only when the path is inside allowed file roots. If outside, do not call — ask the user to update Settings or use shell_command.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": { "type": "string", "description": "workspace-relative or absolute path under an allowed file root" },
-          "content": { "type": "string", "description": "file content" },
-          "append": { "type": "boolean", "description": "append instead of overwrite" }
-        },
-        "required": ["path", "content"]
-      }
-    },
-    {
-      "name": "recall_memory",
-      "label": "检索记忆",
-      "group": "记忆",
-      "description": "Search daily, dream, long-term, or script memory for useful context.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "query": { "type": "string", "description": "what to recall" },
-          "kinds": {
-            "type": "array",
-            "items": { "type": "string", "enum": ["daily", "dream", "long_term", "script"] },
-            "description": "optional memory kinds to search"
-          },
-          "dayKey": { "type": "string", "description": "optional YYYYMMDD day filter" },
-          "k": { "type": "number", "description": "optional result limit" }
-        },
-        "required": ["query"]
-      }
-    },
-    {
-      "name": "search_skills",
-      "label": "Search Skills",
-      "group": "extension",
-      "description": "Search internet skill marketplaces and registries, aggregate relevant skills, and return install-ready results. Use local search only when the user explicitly asks for local skills.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "query": { "type": "string", "description": "what kind of skill to find" },
-          "scope": { "type": "string", "description": "marketplace, local, or all" },
-          "source": { "type": "string", "description": "optional marketplace name, website, or source the user explicitly asked to search" },
-          "website": { "type": "string", "description": "optional website URL the user explicitly asked to search" },
-          "marketplaceIds": {
-            "type": "array",
-            "items": { "type": "string" },
-            "description": "optional marketplace ids to limit marketplace search"
-          }
-        },
-        "required": ["query"]
-      }
-    },
-    {
-      "name": "install_skill",
-      "label": "Install Skill",
-      "group": "extension",
-      "description": "Download and install a skill from a supported marketplace into Nexo.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "marketplaceId": { "type": "string", "description": "marketplace id such as skills-sh or heurist-mesh" },
-          "installSpec": { "type": "string", "description": "install spec or slug returned by search_skills" },
-          "name": { "type": "string", "description": "optional display name" },
-          "homepage": { "type": "string", "description": "optional homepage URL" }
-        },
-        "required": ["marketplaceId", "installSpec"]
-      }
-    },
-    {
-      "name": "create_skill",
-      "label": "Create Skill",
-      "group": "extension",
-      "description": "Create or update a managed custom skill from conversation input and save it into Nexo's local skill library.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "name": { "type": "string", "description": "skill display name" },
-          "key": { "type": "string", "description": "optional stable slug" },
-          "category": { "type": "string", "description": "skill category such as coding, writing, analysis" },
-          "description": { "type": "string", "description": "short trigger-oriented description" },
-          "instruction": { "type": "string", "description": "skill body or full SKILL.md content" },
-          "enabled": { "type": "boolean", "description": "whether the skill should be enabled immediately" }
-        },
-        "required": ["name", "description", "instruction"]
-      }
-    },
-    {
-      "name": "create_scheduled_task",
-      "label": "创建定时任务",
-      "group": "productivity",
-      "description": "Create a Nexo scheduled task that appears in the Tasks panel and is executed by Nexo's scheduler. Use this whenever the user asks to create a reminder, scheduled prompt, recurring job, or one-off task. Prefer delayMinutes for relative requests like 'in 5 minutes', runAt for a specific datetime, and cron for recurring schedules. Do not use shell_command for reminders unless the user explicitly asks for an OS-level task.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "name": { "type": "string", "description": "short task name shown in the Tasks panel" },
-          "prompt": { "type": "string", "description": "prompt to run when the task triggers" },
-          "cron": { "type": "string", "description": "optional 5-field cron expression: minute hour day-of-month month day-of-week" },
-          "delayMinutes": { "type": "number", "description": "optional relative delay in minutes for a one-off task" },
-          "runAt": { "type": "string", "description": "optional future datetime for a one-off task, preferably ISO 8601 with timezone" },
-          "enabled": { "type": "boolean", "description": "whether the task is enabled immediately; defaults to true" },
-          "runOnce": { "type": "boolean", "description": "disable the task after it runs once; defaults to true when delayMinutes or runAt is used" }
-        },
-        "required": ["prompt"]
-      }
-    },
     {
       "name": "shell_command",
       "label": "Shell Command",
       "group": "system",
-      "description": "Run a shell command. Omit timeoutMs to use the configured default (Settings → default script timeout, usually 5 minutes). Do not start long-running dev servers (vite, npm run dev) — they never exit. Do not set timeoutMs below 60000 unless the command finishes in seconds.",
+      "description": "Run a shell command inside the configured workspace. Use this for filesystem inspection, CLI workflows, and scripted operations.",
       "parameters": {
         "type": "object",
         "properties": {
-          "command": { "type": "string", "description": "shell command to run" },
-          "cwd": { "type": "string", "description": "optional workspace-relative working directory" },
-          "timeoutMs": { "type": "number", "description": "optional timeout in milliseconds, 1000-600000; omit to use Settings default" }
+          "command": {
+            "type": "string",
+            "description": "Shell command to run"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Optional workspace-relative working directory"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "Optional timeout in milliseconds. Omit to use the configured default."
+          }
         },
-        "required": ["command"]
+        "required": [
+          "command"
+        ]
+      }
+    },
+    {
+      "name": "invoke_model",
+      "label": "Invoke Model",
+      "group": "model",
+      "description": "Call the default model or a specialist model profile. Route multimodal work through capability tags such as vision, image_generation, image_editing, speech_to_text, and text_to_speech.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "profile": {
+            "type": "string",
+            "description": "Optional profile id or name, or default"
+          },
+          "capability": {
+            "type": "string",
+            "description": "Optional capability: orchestration, chat, vision, image_generation, image_editing, speech_to_text, text_to_speech, or embedding"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Text prompt or edit instruction. Required for normal chat, image analysis questions, image generation, and image editing."
+          },
+          "system": {
+            "type": "string",
+            "description": "Optional system instruction for text-model calls"
+          },
+          "temperature": {
+            "type": "number",
+            "description": "Optional temperature override for text-model calls"
+          },
+          "maxTokens": {
+            "type": "number",
+            "description": "Optional max output tokens for text or vision responses"
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional image upload paths, URLs, or data URLs for capability=vision or capability=image_editing"
+          },
+          "audio": {
+            "type": "string",
+            "description": "Optional audio upload path, URL, or data URL for capability=speech_to_text"
+          },
+          "input": {
+            "type": "string",
+            "description": "Optional text input for capability=text_to_speech"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Optional image detail for vision calls: auto, low, high, or original"
+          },
+          "n": {
+            "type": "number",
+            "description": "Optional number of generated images"
+          },
+          "size": {
+            "type": "string",
+            "description": "Optional image output size"
+          },
+          "quality": {
+            "type": "string",
+            "description": "Optional image output quality"
+          },
+          "background": {
+            "type": "string",
+            "description": "Optional image background mode"
+          },
+          "outputFormat": {
+            "type": "string",
+            "description": "Optional output format such as png, jpeg, or webp"
+          },
+          "inputFidelity": {
+            "type": "string",
+            "description": "Optional input fidelity for image editing: low or high"
+          },
+          "voice": {
+            "type": "string",
+            "description": "Optional voice for text-to-speech"
+          },
+          "instructions": {
+            "type": "string",
+            "description": "Optional speaking style instructions for text-to-speech"
+          }
+        }
+      }
+    },
+    {
+      "name": "recall_memory",
+      "label": "Recall Memory",
+      "group": "memory",
+      "description": "Search daily, dream, long-term, or script memory for useful context.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "What to recall"
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "daily",
+                "dream",
+                "long_term",
+                "script"
+              ]
+            },
+            "description": "Optional memory kinds to search"
+          },
+          "dayKey": {
+            "type": "string",
+            "description": "Optional YYYYMMDD day filter"
+          },
+          "k": {
+            "type": "number",
+            "description": "Optional result limit"
+          }
+        },
+        "required": [
+          "query"
+        ]
       }
     }
   ]

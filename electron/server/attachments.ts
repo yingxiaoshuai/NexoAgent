@@ -9,11 +9,11 @@ export async function loadAttachmentContext(attachments: ChatAttachment[] = []) 
   const parts: string[] = [];
   for (const attachment of attachments) {
     if (attachment.type === "image") {
-      parts.push(`Image attachment: ${attachment.name} (${attachment.url}). Use analyze_image for visual recognition or edit_image if the user asks to modify it.`);
+      parts.push(`Image attachment: ${attachment.name} (${attachment.url}). Use invoke_model with capability="vision" and images=["${attachment.url}"] for analysis, or capability="image_editing" to modify it.`);
       continue;
     }
     if (attachment.type === "audio") {
-      parts.push(`Audio attachment: ${attachment.name} (${attachment.url}). Use transcribe_audio for speech-to-text or audio understanding.`);
+      parts.push(`Audio attachment: ${attachment.name} (${attachment.url}). Use invoke_model with capability="speech_to_text" and audio="${attachment.url}" for transcription.`);
       continue;
     }
     const fileName = path.basename(attachment.url);
