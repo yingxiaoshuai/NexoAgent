@@ -8,7 +8,14 @@ import { getWorkspaceRoot, resolveWorkspacePath } from "../workspace";
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 600_000;
 const MAX_OUTPUT_CHARS = 12_000;
-const WINDOWS_UTF8_PREAMBLE = "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); chcp 65001 > $null;";
+const WINDOWS_UTF8_PREAMBLE = [
+  "$__nexoUtf8 = [System.Text.UTF8Encoding]::new($false)",
+  "[Console]::InputEncoding = $__nexoUtf8",
+  "[Console]::OutputEncoding = $__nexoUtf8",
+  "$OutputEncoding = $__nexoUtf8",
+  "$PSDefaultParameterValues['*:Encoding'] = 'utf8'",
+  "chcp 65001 > $null",
+].join("; ");
 
 function trimOutput(value: string) {
   const normalized = value.replace(/\r/g, "").trim();
@@ -23,7 +30,7 @@ function decodeOutput(chunk: Buffer | string) {
 
 function buildSpawnOptions(command: string) {
   if (process.platform === "win32") {
-    const powershellCommand = `${WINDOWS_UTF8_PREAMBLE} ${command}`;
+    const powershellCommand = `${WINDOWS_UTF8_PREAMBLE}; ${command}`;
     return {
       file: "powershell.exe",
       args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", powershellCommand],

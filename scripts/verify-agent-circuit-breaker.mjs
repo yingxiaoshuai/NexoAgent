@@ -98,6 +98,28 @@ function makeBreaker(overrides = {}, startedAt = Date.now()) {
 }
 
 {
+  const breaker = makeBreaker({
+    circuitBreakerNoProgressLimit: 2,
+    circuitBreakerRepeatedToolCallLimit: 2,
+  });
+  for (const [index, command] of ["write-a", "write-b", "write-c"].entries()) {
+    breaker.recordModelTurn({
+      step: index + 1,
+      visibleText: "",
+      toolCalls: [{ name: "shell_command", args: { command } }],
+    });
+    breaker.recordToolResult({
+      name: "shell_command",
+      args: { command },
+      output: "exit_code: 0\n\n(no output)",
+      elapsedSeconds: 0.1,
+    });
+  }
+  const decision = breaker.evaluate();
+  assert.equal(decision.action, "continue");
+}
+
+{
   const breaker = makeBreaker({ circuitBreakerMaxRuntimeMs: 1000 }, Date.now() - 2000);
   breaker.recordModelTurn({
     step: 1,

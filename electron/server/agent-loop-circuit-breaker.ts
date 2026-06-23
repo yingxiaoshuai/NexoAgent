@@ -42,6 +42,8 @@ interface CircuitBreakerState {
   lastVisibleOutputSignature: string;
   repeatedVisibleOutputCount: number;
   lastUsefulOutputSignature: string;
+  lastToolExchangeSignature: string;
+  repeatedToolExchangeCount: number;
 }
 
 const DEFAULT_STATE: CircuitBreakerState = {
@@ -53,6 +55,8 @@ const DEFAULT_STATE: CircuitBreakerState = {
   lastVisibleOutputSignature: "",
   repeatedVisibleOutputCount: 0,
   lastUsefulOutputSignature: "",
+  lastToolExchangeSignature: "",
+  repeatedToolExchangeCount: 0,
 };
 
 const REPEATED_VISIBLE_OUTPUT_LIMIT = 4;
@@ -109,6 +113,12 @@ function visibleOutputSignature(output: string) {
   return normalized.slice(0, 400);
 }
 
+function toolExchangeSignature(result: CircuitBreakerToolResult) {
+  const inputSignature = `${result.name}:${stableSerialize(result.args)}`;
+  const outputSignature = visibleOutputSignature(result.output) || "<empty>";
+  return `${inputSignature}=>${outputSignature}`;
+}
+
 export function circuitBreakerInfoFromDecision(decision: Extract<CircuitBreakerDecision, { action: "stop" }>): CircuitBreakerInfo {
   return {
     reason: decision.reason,
@@ -157,16 +167,22 @@ export class AgentLoopCircuitBreaker {
       this.state.repeatedVisibleOutputCount = 0;
     }
 
-    const madeVisibleProgress = normalizeText(turn.visibleText).length > 0;
-    if (madeVisibleProgress) {
+    if (normalizeText(turn.visibleText).length > 0) {
       this.state.noProgressCount = 0;
-    } else if (turn.toolCalls.length > 0) {
-      this.state.noProgressCount += 1;
     }
   }
 
   recordToolResult(result: CircuitBreakerToolResult) {
     const outputSignature = usefulOutputSignature(result.output);
+    const exchangeSignature = toolExchangeSignature(result);
+    if (exchangeSignature === this.state.lastToolExchangeSignature) {
+      this.state.repeatedToolExchangeCount += 1;
+    } else {
+      this.state.lastToolExchangeSignature = exchangeSignature;
+      this.state.repeatedToolExchangeCount = 1;
+      this.state.noProgressCount = 0;
+    }
+
     if (isFailureOutput(result.output)) {
       this.state.consecutiveFailureCount += 1;
     } else {
@@ -177,8 +193,8 @@ export class AgentLoopCircuitBreaker {
       this.state.lastUsefulOutputSignature = outputSignature;
       this.state.repeatedVisibleOutputCount = 0;
       this.state.noProgressCount = 0;
-    } else if (!outputSignature) {
-      this.state.noProgressCount += 1;
+    } else if (this.state.repeatedToolExchangeCount > 1) {
+      this.state.noProgressCount = Math.max(this.state.noProgressCount, this.state.repeatedToolExchangeCount);
     }
   }
 
@@ -194,21 +210,26 @@ export class AgentLoopCircuitBreaker {
       };
     }
 
-    if (this.state.repeatedVisibleOutputCount >= REPEATED_VISIBLE_OUTPUT_LIMIT && this.state.lastVisibleOutputSignature) {
+    if (
+      this.state.repeatedVisibleOutputCount >= REPEATED_VISIBLE_OUTPUT_LIMIT
+      && this.state.lastVisibleOutputSignature
+      && this.state.repeatedToolExchangeCount >= REPEATED_VISIBLE_OUTPUT_LIMIT
+      && this.state.lastToolExchangeSignature
+    ) {
       return {
         action: "stop",
         reason: "repeated_visible_output",
-        detail: `The model produced the same visible output ${this.state.repeatedVisibleOutputCount} times in a row while still trying to continue.`,
+        detail: `The model produced the same visible output with the same tool input and output ${this.state.repeatedVisibleOutputCount} times in a row while still trying to continue.`,
         step,
       };
     }
 
     const repeatedToolLimit = Math.max(1, this.settings.circuitBreakerRepeatedToolCallLimit ?? 3);
-    if (this.state.repeatedFingerprintCount >= repeatedToolLimit && this.state.lastFingerprint) {
+    if (this.state.repeatedToolExchangeCount >= repeatedToolLimit && this.state.lastToolExchangeSignature) {
       return {
         action: "stop",
         reason: "repeated_tool_calls",
-        detail: `Equivalent tool calls repeated ${this.state.repeatedFingerprintCount} times without enough progress.`,
+        detail: `Equivalent tool calls with the same output repeated ${this.state.repeatedToolExchangeCount} times without enough progress.`,
         step,
       };
     }
