@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import type { AgentSettings, Attachment as ChatAttachment, ChatMessage } from "../shared/types";
-import { apiGet, apiPost, apiDelete, apiPatch, getRuntimeApiBase, setRuntimeApiBase, subscribeStream } from "../services/api";
+import { apiDelete, apiGet, apiPatch, apiPost, getRuntimeApiBase, setRuntimeApiBase, subscribeStream } from "../services/api";
 import { sanitizeApiKeyForSave } from "../shared/settings";
 import { getProviderDefaultApiBase, getProviderName, normalizeProviderId } from "../shared/providers";
 import type { ToolCallEvent } from "../components/ChatPanel/ToolCallSteps";
@@ -15,7 +15,6 @@ export interface SessionMeta {
 
 export type Attachment = ChatAttachment;
 
-// Per-message tool call tracking
 export type MessageToolCalls = Record<string, ToolCallEvent[]>;
 
 export type MessageBlock =
@@ -28,11 +27,10 @@ interface ChatStore {
   sessions: SessionMeta[];
   activeSessionId: string | null;
   messages: ChatMessage[];
-  toolCalls: MessageToolCalls; // keyed by assistant message id
-  messageBlocks: MessageBlocks; // ordered segments for inline tool + text rendering
+  toolCalls: MessageToolCalls;
+  messageBlocks: MessageBlocks;
   streaming: boolean;
   settings: AgentSettings;
-
   ensureRuntimeReady: () => Promise<void>;
   loadSessions: () => Promise<void>;
   newSession: () => Promise<void>;
@@ -95,7 +93,7 @@ type DesktopApi = {
   nexoDesktop: {
     getRuntimeInfo: () => Promise<{ webBaseUrl?: string }>;
     loadSettings: () => Promise<AgentSettings>;
-    saveSettings: (s: AgentSettings) => Promise<AgentSettings>;
+    saveSettings: (settings: AgentSettings) => Promise<AgentSettings>;
     openExternal: (url: string) => Promise<void>;
   };
 };
@@ -156,187 +154,233 @@ export const useChatStore = create<ChatStore>((set, get) => {
   }
 
   return {
-  sessions: [],
-  activeSessionId: null,
-  messages: [],
-  toolCalls: {},
-  messageBlocks: {},
-  streaming: false,
-  settings: defaultSettings,
-  cancelStream: () => {},
-  ensureRuntimeReady,
+    sessions: [],
+    activeSessionId: null,
+    messages: [],
+    toolCalls: {},
+    messageBlocks: {},
+    streaming: false,
+    settings: defaultSettings,
+    cancelStream: () => {},
+    ensureRuntimeReady,
 
-  loadSessions: async () => {
-    await ensureRuntimeReady();
-    const sessions = await apiGet<SessionMeta[]>("/api/sessions");
-    set({ sessions });
-  },
-
-  newSession: async () => {
-    await ensureRuntimeReady();
-    const s = await apiPost<SessionMeta>("/api/sessions", {});
-    set((st) => ({ sessions: [s, ...st.sessions], activeSessionId: s.id, messages: [], toolCalls: {}, messageBlocks: {} }));
-  },
-
-  selectSession: async (id) => {
-    await ensureRuntimeReady();
-    const messages = await apiGet<ChatMessage[]>(`/api/sessions/${id}/messages`);
-    set({ activeSessionId: id, messages, toolCalls: {}, messageBlocks: {} });
-  },
-
-  deleteSession: async (id) => {
-    await ensureRuntimeReady();
-    await apiDelete(`/api/sessions/${id}`);
-    const { sessions, activeSessionId } = get();
-    const next = sessions.filter((s) => s.id !== id);
-    const newActive = activeSessionId === id ? (next[0]?.id ?? null) : activeSessionId;
-    set({ sessions: next, activeSessionId: newActive, messages: newActive === activeSessionId ? get().messages : [], toolCalls: {}, messageBlocks: {} });
-    if (newActive && newActive !== activeSessionId) await get().selectSession(newActive);
-  },
-
-  renameSession: async (id, title) => {
-    await ensureRuntimeReady();
-    await apiPatch(`/api/sessions/${id}`, { title });
-    set((st) => ({ sessions: st.sessions.map((s) => (s.id === id ? { ...s, title } : s)) }));
-  },
-
-  sendMessage: async (content, attachments) => {
-    let { activeSessionId, settings } = get();
-    if (!activeSessionId) {
-      await get().newSession();
-      activeSessionId = get().activeSessionId!;
-    }
-
-    const userMsg: ChatMessage = { id: uuid(), role: "user", content, createdAt: new Date().toISOString(), status: "completed", ...{ attachments: attachments || [] } };
-    const assistantId = uuid();
-    const assistantMsg: ChatMessage = { id: assistantId, role: "assistant", content: "", createdAt: new Date().toISOString(), status: "sending" };
-
-    set((st) => ({ messages: [...st.messages, userMsg, assistantMsg], streaming: true }));
-
-    let requestId: string;
-    try {
-      const response = await apiPost<{ requestId: string }>("/api/chat", {
-        sessionId: activeSessionId, message: content, settings, attachments: attachments || [],
-      });
-      requestId = response.requestId;
-    } catch (error) {
-      set((st) => ({
-        streaming: false,
-        messages: st.messages.map((m) =>
-            m.id === assistantId
-            ? { ...m, content: formatAssistantError(error instanceof Error ? error.message : String(error)), status: "failed" }
-            : m
-        ),
-      }));
-      return;
-    }
-
-    // Track tool call start times for elapsed calculation
-    const toolStartTimes: Record<string, number> = {};
-    let full = "";
-
-    const appendToken = (token: string) => {
-      full += token;
-      set((st) => {
-        const blocks = [...(st.messageBlocks[assistantId] ?? [])];
-        const last = blocks[blocks.length - 1];
-        if (last?.type === "text") {
-          blocks[blocks.length - 1] = { type: "text", content: last.content + token };
-        } else {
-          blocks.push({ type: "text", content: token });
-        }
-        return {
-          messages: st.messages.map((m) => m.id === assistantId ? { ...m, content: full } : m),
-          messageBlocks: { ...st.messageBlocks, [assistantId]: blocks },
-        };
-      });
-    };
-
-    const cancel = subscribeStream(requestId, (event) => {
-      if (event.type === "token") {
-        appendToken(event.content as string);
-      } else if (event.type === "tool_call") {
-        const tc: ToolCallEvent = {
-          id: event.id as string,
-          name: event.name as string,
-          input: event.input,
-          status: "running",
-        };
-        toolStartTimes[tc.id] = Date.now();
-        set((st) => ({
-          toolCalls: {
-            ...st.toolCalls,
-            [assistantId]: [...(st.toolCalls[assistantId] ?? []), tc],
-          },
-          messageBlocks: {
-            ...st.messageBlocks,
-            [assistantId]: [...(st.messageBlocks[assistantId] ?? []), { type: "tool", id: tc.id }],
-          },
-        }));
-      } else if (event.type === "tool_result") {
-        const output = String(event.output ?? "");
-        const isError = output.trim().startsWith("Error:");
-        const elapsed = toolStartTimes[event.id as string]
-          ? (Date.now() - toolStartTimes[event.id as string]) / 1000
-          : 0;
-        set((st) => ({
-          toolCalls: {
-            ...st.toolCalls,
-            [assistantId]: (st.toolCalls[assistantId] ?? []).map((tc) =>
-              tc.id === event.id
-                ? { ...tc, output, elapsed, status: isError ? "error" as const : "done" as const }
-                : tc
-            ),
-          },
-        }));
-      } else if (event.type === "done") {
-        const status = String(event.status ?? "completed") as ChatMessage["status"];
-        set((st) => ({
-          streaming: false,
-          cancelStream: () => {},
-          messages: st.messages.map((m) =>
-            m.id === assistantId ? { ...m, content: full || (event.content as string), status } : m
-          ),
-        }));
-        void get().loadSessions();
-        cancel();
-      } else if (event.type === "error") {
-        set((st) => ({
-          streaming: false,
-          cancelStream: () => {},
-          messages: st.messages.map((m) =>
-            m.id === assistantId ? { ...m, content: formatAssistantError(String(event.message ?? "")), status: "failed" } : m
-          ),
-        }));
-        cancel();
-      }
-    });
-    set({
-      cancelStream: () => {
-        void apiPost<{ ok: boolean }>(`/api/chat/${requestId}/interrupt`, {}).catch(() => undefined);
-        cancel();
-        set((st) => ({
-          streaming: false,
-          cancelStream: () => {},
-          messages: st.messages.map((m) => (
-            m.id === assistantId && m.status === "sending"
-              ? { ...m, content: m.content || "已停止当前运行。", status: "interrupted" }
-              : m
-          )),
-        }));
-      },
-    });
-  },
-
-  loadSettings: async () => {
-    const desktop = getDesktopApi();
-    if (desktop) {
+    loadSessions: async () => {
       await ensureRuntimeReady();
-      const s = await desktop.loadSettings();
-      const merged = normalizeSettingsShape({ ...defaultSettings, ...s });
-      set({ settings: merged });
-      await syncSettingsToServer(merged);
-    } else {
+      const sessions = await apiGet<SessionMeta[]>("/api/sessions");
+      set({ sessions });
+    },
+
+    newSession: async () => {
+      await ensureRuntimeReady();
+      const session = await apiPost<SessionMeta>("/api/sessions", {});
+      set((state) => ({
+        sessions: [session, ...state.sessions],
+        activeSessionId: session.id,
+        messages: [],
+        toolCalls: {},
+        messageBlocks: {},
+      }));
+    },
+
+    selectSession: async (id) => {
+      await ensureRuntimeReady();
+      const messages = await apiGet<ChatMessage[]>(`/api/sessions/${id}/messages`);
+      set({ activeSessionId: id, messages, toolCalls: {}, messageBlocks: {} });
+    },
+
+    deleteSession: async (id) => {
+      await ensureRuntimeReady();
+      await apiDelete(`/api/sessions/${id}`);
+      const { sessions, activeSessionId } = get();
+      const next = sessions.filter((session) => session.id !== id);
+      const newActive = activeSessionId === id ? (next[0]?.id ?? null) : activeSessionId;
+      set({
+        sessions: next,
+        activeSessionId: newActive,
+        messages: newActive === activeSessionId ? get().messages : [],
+        toolCalls: {},
+        messageBlocks: {},
+      });
+      if (newActive && newActive !== activeSessionId) {
+        await get().selectSession(newActive);
+      }
+    },
+
+    renameSession: async (id, title) => {
+      await ensureRuntimeReady();
+      await apiPatch(`/api/sessions/${id}`, { title });
+      set((state) => ({ sessions: state.sessions.map((session) => (session.id === id ? { ...session, title } : session)) }));
+    },
+
+    sendMessage: async (content, attachments) => {
+      let { activeSessionId, settings } = get();
+      if (!activeSessionId) {
+        await get().newSession();
+        activeSessionId = get().activeSessionId!;
+      }
+
+      const userMessage: ChatMessage = {
+        id: uuid(),
+        role: "user",
+        content,
+        createdAt: new Date().toISOString(),
+        status: "completed",
+        attachments: attachments || [],
+      };
+      const assistantId = uuid();
+      const assistantMessage: ChatMessage = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        createdAt: new Date().toISOString(),
+        status: "sending",
+      };
+
+      set((state) => ({ messages: [...state.messages, userMessage, assistantMessage], streaming: true }));
+
+      let requestId: string;
+      try {
+        const response = await apiPost<{ requestId: string }>("/api/chat", {
+          sessionId: activeSessionId,
+          message: content,
+          settings,
+          attachments: attachments || [],
+        });
+        requestId = response.requestId;
+      } catch (error) {
+        set((state) => ({
+          streaming: false,
+          messages: state.messages.map((message) =>
+            message.id === assistantId
+              ? { ...message, content: formatAssistantError(error instanceof Error ? error.message : String(error)), status: "failed" }
+              : message
+          ),
+        }));
+        return;
+      }
+
+      const toolStartTimes: Record<string, number> = {};
+      let full = "";
+
+      const appendToken = (token: string) => {
+        full += token;
+        set((state) => {
+          const blocks = [...(state.messageBlocks[assistantId] ?? [])];
+          const last = blocks[blocks.length - 1];
+          if (last?.type === "text") {
+            blocks[blocks.length - 1] = { type: "text", content: last.content + token };
+          } else {
+            blocks.push({ type: "text", content: token });
+          }
+          return {
+            messages: state.messages.map((message) => (message.id === assistantId ? { ...message, content: full } : message)),
+            messageBlocks: { ...state.messageBlocks, [assistantId]: blocks },
+          };
+        });
+      };
+
+      const cancel = subscribeStream(requestId, (event) => {
+        if (event.type === "token") {
+          appendToken(event.content as string);
+          return;
+        }
+
+        if (event.type === "tool_call") {
+          const toolCall: ToolCallEvent = {
+            id: event.id as string,
+            name: event.name as string,
+            input: event.input,
+            status: "running",
+          };
+          toolStartTimes[toolCall.id] = Date.now();
+          set((state) => ({
+            toolCalls: {
+              ...state.toolCalls,
+              [assistantId]: [...(state.toolCalls[assistantId] ?? []), toolCall],
+            },
+            messageBlocks: {
+              ...state.messageBlocks,
+              [assistantId]: [...(state.messageBlocks[assistantId] ?? []), { type: "tool", id: toolCall.id }],
+            },
+          }));
+          return;
+        }
+
+        if (event.type === "tool_result") {
+          const output = String(event.output ?? "");
+          const isError = output.trim().startsWith("Error:");
+          const elapsed = toolStartTimes[event.id as string]
+            ? (Date.now() - toolStartTimes[event.id as string]) / 1000
+            : 0;
+          set((state) => ({
+            toolCalls: {
+              ...state.toolCalls,
+              [assistantId]: (state.toolCalls[assistantId] ?? []).map((toolCall) =>
+                toolCall.id === event.id
+                  ? { ...toolCall, output, elapsed, status: isError ? "error" : "done" }
+                  : toolCall
+              ),
+            },
+          }));
+          return;
+        }
+
+        if (event.type === "done") {
+          const status = String(event.status ?? "completed") as ChatMessage["status"];
+          set((state) => ({
+            streaming: false,
+            cancelStream: () => {},
+            messages: state.messages.map((message) =>
+              message.id === assistantId ? { ...message, content: full || (event.content as string), status } : message
+            ),
+          }));
+          void get().loadSessions();
+          cancel();
+          return;
+        }
+
+        if (event.type === "error") {
+          set((state) => ({
+            streaming: false,
+            cancelStream: () => {},
+            messages: state.messages.map((message) =>
+              message.id === assistantId
+                ? { ...message, content: formatAssistantError(String(event.message ?? "")), status: "failed" }
+                : message
+            ),
+          }));
+          cancel();
+        }
+      });
+
+      set({
+        cancelStream: () => {
+          void apiPost<{ ok: boolean }>(`/api/chat/${requestId}/interrupt`, {}).catch(() => undefined);
+          cancel();
+          set((state) => ({
+            streaming: false,
+            cancelStream: () => {},
+            messages: state.messages.map((message) =>
+              message.id === assistantId && message.status === "sending"
+                ? { ...message, content: message.content || "\u5df2\u505c\u6b62\u5f53\u524d\u8fd0\u884c\u3002", status: "interrupted" }
+                : message
+            ),
+          }));
+        },
+      });
+    },
+
+    loadSettings: async () => {
+      const desktop = getDesktopApi();
+      if (desktop) {
+        await ensureRuntimeReady();
+        const settings = await desktop.loadSettings();
+        const merged = normalizeSettingsShape({ ...defaultSettings, ...settings });
+        set({ settings: merged });
+        await syncSettingsToServer(merged);
+        return;
+      }
+
       const stored = localStorage.getItem("nexo-settings");
       let merged = { ...defaultSettings } as AgentSettings;
       if (stored) {
@@ -345,8 +389,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
           const hasApiKey = parsed.hasApiKey || Boolean(parsed.apiKey?.trim());
           merged = normalizeSettingsShape({ ...defaultSettings, ...parsed, apiKey: "", hasApiKey });
           set({ settings: merged });
-        } catch { /* ignore */ }
+        } catch {
+          // Ignore invalid local settings.
+        }
       }
+
       try {
         const remote = await apiGet<AgentSettings>("/api/settings");
         merged = normalizeSettingsShape({
@@ -356,23 +403,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
           hasApiKey: remote.hasApiKey || merged.hasApiKey,
         });
         set({ settings: merged });
-      } catch { /* ignore */ }
-      await syncSettingsToServer(merged);
-    }
-  },
+      } catch {
+        // Ignore remote settings load failures.
+      }
 
-  saveSettings: async (partial) => {
-    await ensureRuntimeReady();
-    const merged = { ...get().settings, ...partial };
-    const payload = sanitizeApiKeyForSave(merged);
-    const desktop = getDesktopApi();
-    if (desktop) {
-      const saved = await desktop.saveSettings(payload);
-      const next = normalizeSettingsShape({ ...defaultSettings, ...saved });
-      set({ settings: next });
-      // IPC save already updates backend; also POST so web clients stay in sync.
-      await syncSettingsToServer(next);
-    } else {
+      await syncSettingsToServer(merged);
+    },
+
+    saveSettings: async (partial) => {
+      await ensureRuntimeReady();
+      const merged = { ...get().settings, ...partial };
+      const payload = sanitizeApiKeyForSave(merged);
+      const desktop = getDesktopApi();
+      if (desktop) {
+        const saved = await desktop.saveSettings(payload);
+        const next = normalizeSettingsShape({ ...defaultSettings, ...saved });
+        set({ settings: next });
+        await syncSettingsToServer(next);
+        return;
+      }
+
       localStorage.setItem("nexo-settings", JSON.stringify(payload));
       const next = normalizeSettingsShape({
         ...defaultSettings,
@@ -381,7 +431,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       });
       set({ settings: next });
       await syncSettingsToServer(next);
-    }
-  },
+    },
   };
 });

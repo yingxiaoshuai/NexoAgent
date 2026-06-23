@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { Avatar, Tag } from "antd";
-import { RobotOutlined, UserOutlined, FileOutlined, SoundOutlined } from "@ant-design/icons";
+import { FileOutlined, RobotOutlined, SoundOutlined, UserOutlined } from "@ant-design/icons";
 import type { ChatMessage } from "../../shared/types";
 import { ToolCallItem } from "./ToolCallSteps";
 import type { ToolCallEvent } from "./ToolCallSteps";
@@ -20,7 +20,8 @@ interface Props {
   attachments?: ChatMessage["attachments"];
 }
 
-const DSML_TAG_PATTERN = String.raw`(?:\|\|DSML\|\||｜｜DSML｜｜|锝滐綔DSML锝滐綔)`;
+const STREAM_CURSOR = "▋";
+const DSML_TAG_PATTERN = String.raw`(?:\|\|DSML\|\||｜｜DSML｜｜|锝滐綔DSML锝滐綔|閿濇粣缍擠SML閿濇粣缍?)`;
 const DSML_TOOL_BLOCK_RE = new RegExp(String.raw`<\s*${DSML_TAG_PATTERN}tool_calls\s*>[\s\S]*?<\/\s*${DSML_TAG_PATTERN}tool_calls\s*>`, "g");
 const DSML_TOOL_START_RE = new RegExp(String.raw`<\s*${DSML_TAG_PATTERN}tool_calls\s*>`);
 const DSML_ANY_TAG_RE = new RegExp(String.raw`<\/?\s*${DSML_TAG_PATTERN}(?:tool_calls|invoke|parameter)\b[^>]*>`, "g");
@@ -58,7 +59,8 @@ const MarkdownText: React.FC<{ content: string; streaming?: boolean; colors: The
   const components = useMemo(() => buildMarkdownComponents(colors), [colors]);
   return streaming ? (
     <span style={{ whiteSpace: "pre-wrap", lineHeight: 1.7 }}>
-      {content}<span style={{ color: "#38bdf8", animation: "blink 1s step-end infinite" }}>▍</span>
+      {content}
+      <span style={{ color: "#38bdf8", animation: "blink 1s step-end infinite" }}>{STREAM_CURSOR}</span>
     </span>
   ) : (
     <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]} components={components}>
@@ -100,79 +102,99 @@ function getMessageStatusMeta(status: ChatMessage["status"]) {
 export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, blocks }) => {
   const { colors } = useTheme();
   const isUser = message.role === "user";
-  const toolMap = new Map((toolCalls ?? []).map((tc) => [tc.id, tc]));
-  const hasBlocks = !isUser && blocks && blocks.length > 0;
+  const toolMap = new Map((toolCalls ?? []).map((toolCall) => [toolCall.id, toolCall]));
+  const hasBlocks = !isUser && Boolean(blocks?.length);
   const apiBase = getApiBase();
   const safeContent = !isUser ? stripDsmlArtifacts(message.content) : message.content;
   const generatedArtifacts = !isUser ? extractUploadArtifacts(safeContent) : [];
   const statusMeta = !isUser ? getMessageStatusMeta(message.status) : null;
 
   return (
-    <div style={{
-      display: "flex", gap: 10,
-      flexDirection: isUser ? "row-reverse" : "row",
-      marginBottom: 16, alignItems: "flex-start",
-    }}>
+    <div
+      style={{
+        display: "flex",
+        gap: 10,
+        flexDirection: isUser ? "row-reverse" : "row",
+        marginBottom: 16,
+        alignItems: "flex-start",
+      }}
+    >
       <Avatar
         icon={isUser ? <UserOutlined /> : <RobotOutlined />}
         style={{ background: isUser ? colors.bubbleUser : colors.assistantAvatar, flexShrink: 0, marginTop: 2 }}
         size={32}
       />
       <div style={{ maxWidth: "80%", minWidth: 0 }}>
-        {message.attachments && message.attachments.map((att, i) =>
-          att.type === "image" ? (
+        {message.attachments?.map((attachment, index) =>
+          attachment.type === "image" ? (
             <img
-              key={i}
-              src={apiBase + att.url}
+              key={index}
+              src={apiBase + attachment.url}
               style={{ maxWidth: 200, borderRadius: 8, marginBottom: 6, display: "block", cursor: "pointer" }}
-              onClick={() => window.open(apiBase + att.url)}
+              onClick={() => window.open(apiBase + attachment.url)}
             />
-          ) : att.type === "audio" ? (
-            <div key={i} style={{
-              background: colors.bgTertiary, border: `1px solid ${colors.borderStrong}`,
-              padding: 8, borderRadius: 8, marginBottom: 6,
-            }}>
+          ) : attachment.type === "audio" ? (
+            <div
+              key={index}
+              style={{
+                background: colors.bgTertiary,
+                border: `1px solid ${colors.borderStrong}`,
+                padding: 8,
+                borderRadius: 8,
+                marginBottom: 6,
+              }}
+            >
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, color: colors.textMuted }}>
                 <SoundOutlined />
-                <a href={apiBase + att.url} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>
-                  {att.name}
+                <a href={apiBase + attachment.url} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>
+                  {attachment.name}
                 </a>
               </div>
-              <audio controls src={apiBase + att.url} style={{ width: "100%" }} />
+              <audio controls src={apiBase + attachment.url} style={{ width: "100%" }} />
             </div>
           ) : (
-            <div key={i} style={{
-              background: colors.bgTertiary, border: `1px solid ${colors.borderStrong}`,
-              padding: 8, borderRadius: 8, marginBottom: 6,
-              display: "flex", alignItems: "center", gap: 8,
-            }}>
+            <div
+              key={index}
+              style={{
+                background: colors.bgTertiary,
+                border: `1px solid ${colors.borderStrong}`,
+                padding: 8,
+                borderRadius: 8,
+                marginBottom: 6,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
               <FileOutlined style={{ color: colors.textMuted }} />
-              <a href={apiBase + att.url} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>
-                {att.name}
+              <a href={apiBase + attachment.url} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>
+                {attachment.name}
               </a>
             </div>
           )
         )}
-        <div style={{
-          background: isUser ? colors.bubbleUser : colors.bubbleAssistant,
-          color: isUser ? "#ffffff" : colors.textPrimary,
-          border: isUser ? "none" : `1px solid ${colors.border}`,
-          borderRadius: isUser ? "16px 4px 16px 16px" : "4px 16px 16px 16px",
-          padding: "10px 14px",
-          wordBreak: "break-word",
-        }}>
+        <div
+          style={{
+            background: isUser ? colors.bubbleUser : colors.bubbleAssistant,
+            color: isUser ? "#ffffff" : colors.textPrimary,
+            border: isUser ? "none" : `1px solid ${colors.border}`,
+            borderRadius: isUser ? "16px 4px 16px 16px" : "4px 16px 16px 16px",
+            padding: "10px 14px",
+            wordBreak: "break-word",
+          }}
+        >
           {isUser ? (
             <span style={{ whiteSpace: "pre-wrap" }}>{message.content}</span>
-          ) : hasBlocks ? (
+          ) : hasBlocks && blocks ? (
             <>
-              {blocks.map((block, i) => {
-                const isLast = i === blocks.length - 1;
+              {blocks.map((block, index) => {
+                const isLast = index === blocks.length - 1;
                 if (block.type === "text") {
                   return (
                     <MarkdownText
-                      key={`text-${i}`}
+                      key={`text-${index}`}
                       content={stripDsmlArtifacts(block.content)}
-                      streaming={streaming && isLast && block.type === "text"}
+                      streaming={streaming && isLast}
                       colors={colors}
                     />
                   );
@@ -180,43 +202,48 @@ export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, 
                 const call = toolMap.get(block.id);
                 return call ? <ToolCallItem key={block.id} call={call} /> : null;
               })}
-              {streaming && blocks.length > 0 && blocks[blocks.length - 1].type === "tool" && (
-                <span style={{ color: "#38bdf8", animation: "blink 1s step-end infinite" }}>▍</span>
-              )}
+              {streaming && blocks.length > 0 && blocks[blocks.length - 1].type === "tool" ? (
+                <span style={{ color: "#38bdf8", animation: "blink 1s step-end infinite" }}>{STREAM_CURSOR}</span>
+              ) : null}
             </>
           ) : (
             <MarkdownText content={safeContent} streaming={streaming} colors={colors} />
           )}
         </div>
-        {generatedArtifacts.length > 0 && (
+        {generatedArtifacts.length > 0 ? (
           <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-            {generatedArtifacts.map((artifact) => artifact.type === "image" ? (
-              <img
-                key={artifact.url}
-                src={apiBase + artifact.url}
-                alt={artifact.name}
-                style={{ maxWidth: 280, borderRadius: 8, border: `1px solid ${colors.border}`, cursor: "pointer" }}
-                onClick={() => window.open(apiBase + artifact.url)}
-              />
-            ) : (
-              <div
-                key={artifact.url}
-                style={{ background: colors.bgTertiary, border: `1px solid ${colors.borderStrong}`, padding: 8, borderRadius: 8 }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                  <SoundOutlined style={{ color: colors.textMuted }} />
-                  <a href={apiBase + artifact.url} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>
-                    {artifact.name}
-                  </a>
+            {generatedArtifacts.map((artifact) =>
+              artifact.type === "image" ? (
+                <img
+                  key={artifact.url}
+                  src={apiBase + artifact.url}
+                  alt={artifact.name}
+                  style={{ maxWidth: 280, borderRadius: 8, border: `1px solid ${colors.border}`, cursor: "pointer" }}
+                  onClick={() => window.open(apiBase + artifact.url)}
+                />
+              ) : (
+                <div
+                  key={artifact.url}
+                  style={{
+                    background: colors.bgTertiary,
+                    border: `1px solid ${colors.borderStrong}`,
+                    padding: 8,
+                    borderRadius: 8,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <SoundOutlined style={{ color: colors.textMuted }} />
+                    <a href={apiBase + artifact.url} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>
+                      {artifact.name}
+                    </a>
+                  </div>
+                  <audio controls src={apiBase + artifact.url} style={{ width: "100%" }} />
                 </div>
-                <audio controls src={apiBase + artifact.url} style={{ width: "100%" }} />
-              </div>
-            ))}
+              )
+            )}
           </div>
-        )}
-        {statusMeta && (
-          <Tag color={statusMeta.color} style={{ marginTop: 4 }}>{statusMeta.label}</Tag>
-        )}
+        ) : null}
+        {statusMeta ? <Tag color={statusMeta.color} style={{ marginTop: 4 }}>{statusMeta.label}</Tag> : null}
       </div>
     </div>
   );

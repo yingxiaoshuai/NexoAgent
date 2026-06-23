@@ -57,6 +57,7 @@ export interface ToolDef {
   group: string;
   description: string;
   parameters: Record<string, unknown>;
+  sourceServerName?: string;
   execute: (args: Record<string, unknown>, ctx: ToolExecutionContext) => Promise<string>;
 }
 

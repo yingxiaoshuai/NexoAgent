@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { readBundledJson } from "../bundled-config";
 import { DATA_DIR, TOOL_SETTINGS_FILE } from "../config";
+import { getMcpToolDefs, getMcpToolMap } from "../mcp-runtime";
 import type { ToolDef } from "../types";
 import { TOOL_EXECUTORS } from "./executors";
 
@@ -118,6 +119,27 @@ export function getToolMap() {
 
 export function getEnabledToolDefs() {
   return toolDefs.filter((tool) => enabledTools.has(tool.name));
+}
+
+export async function getAllToolDefs() {
+  await ensureToolsLoaded();
+  const mcpTools = await getMcpToolDefs();
+  return [...toolDefs, ...mcpTools];
+}
+
+export async function getAllToolMap() {
+  await ensureToolsLoaded();
+  const all = new Map<string, ToolDef>(toolMap);
+  for (const [name, tool] of (await getMcpToolMap()).entries()) {
+    all.set(name, tool);
+  }
+  return all;
+}
+
+export async function getAllEnabledToolDefs() {
+  await ensureToolsLoaded();
+  const mcpTools = await getMcpToolDefs();
+  return [...getEnabledToolDefs(), ...mcpTools];
 }
 
 export function isToolEnabled(name: string) {

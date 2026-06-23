@@ -8,11 +8,32 @@ import { getWorkspaceRoot, resolveWorkspacePath } from "../workspace";
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 600_000;
 const MAX_OUTPUT_CHARS = 12_000;
+const WINDOWS_UTF8_PREAMBLE = "[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); chcp 65001 > $null;";
 
 function trimOutput(value: string) {
   const normalized = value.replace(/\r/g, "").trim();
   if (normalized.length <= MAX_OUTPUT_CHARS) return normalized;
   return `${normalized.slice(0, MAX_OUTPUT_CHARS)}\n\n[output truncated by Nexo]`;
+}
+
+function decodeOutput(chunk: Buffer | string) {
+  if (typeof chunk === "string") return chunk;
+  return chunk.toString("utf8");
+}
+
+function buildSpawnOptions(command: string) {
+  if (process.platform === "win32") {
+    const powershellCommand = `${WINDOWS_UTF8_PREAMBLE} ${command}`;
+    return {
+      file: "powershell.exe",
+      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", powershellCommand],
+    };
+  }
+
+  return {
+    file: command,
+    args: [] as string[],
+  };
 }
 
 function resolveShellTimeoutMs(args: Record<string, unknown>, ctx: ToolExecutionContext) {
@@ -37,10 +58,11 @@ export async function runShellCommand(args: Record<string, unknown>, ctx: ToolEx
   }
 
   return new Promise<string>((resolve, reject) => {
-    const child = spawn(command, {
+    const spawnOptions = buildSpawnOptions(command);
+    const child = spawn(spawnOptions.file, spawnOptions.args, {
       cwd,
       env: { ...process.env },
-      shell: true,
+      shell: process.platform === "win32" ? false : true,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -55,11 +77,11 @@ export async function runShellCommand(args: Record<string, unknown>, ctx: ToolEx
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+      stdout += decodeOutput(chunk);
     });
 
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
+      stderr += decodeOutput(chunk);
     });
 
     child.on("error", (error) => {

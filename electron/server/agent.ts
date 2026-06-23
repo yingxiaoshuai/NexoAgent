@@ -1,6 +1,7 @@
 import { ChatOpenAI } from "@langchain/openai";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import type { AIMessageChunk } from "@langchain/core/messages";
+import type { BaseMessage } from "@langchain/core/messages";
 import type { AgentSettings, ChatMessage } from "../../src/shared/types";
 import { extractAndStore, recallMemory } from "../memory";
 import { loadAttachmentContext } from "./attachments";
@@ -13,7 +14,7 @@ import { pushEvent } from "./sse";
 import { getWebSettings } from "./settings";
 import { getEnabledSkillInstructions } from "./skills";
 import { computePromptBudget, estimateMessagesTokens, estimateSectionTokens, estimateTokens, trimSectionsToBudget, truncateTextToTokenBudget } from "./token-budget";
-import { getEnabledToolDefs, toLcTool } from "./tools/registry";
+import { getAllEnabledToolDefs, toLcTool } from "./tools/registry";
 import type { ChatAttachment, Session, StreamEvent, ToolDef, ToolExecutionContext } from "./types";
 import { decodeHtml, parseToolArgs, toErrorMessage } from "./utils";
 import { getAllowedFileRoots, getWorkspaceRoot, isPathInsideWorkspace, workspaceBoundaryError } from "./workspace";
@@ -358,7 +359,7 @@ export async function streamFromLLM(
   const model = primaryConfig.model;
   const capabilitySummary = await getEnabledModelCapabilitySummary();
   const skillInstructions = await getEnabledSkillInstructions();
-  const enabledToolDefs = withSettingsAwareToolDefs(getEnabledToolDefs(), settings);
+  const enabledToolDefs = withSettingsAwareToolDefs(await getAllEnabledToolDefs(), settings);
   const resolvedBudget = await resolveAndPersistModelContextBudget({
     providerId: primaryConfig.providerId,
     model: primaryConfig.model,
@@ -460,7 +461,7 @@ export async function streamFromLLM(
     budgetConfig
   );
 
-  const lcMessages = [
+  const lcMessages: BaseMessage[] = [
     new SystemMessage(systemPrompt),
     ...(conversationContext.compactedSummary
       ? [new SystemMessage(`Earlier conversation summary from automatic context compaction:\n${conversationContext.compactedSummary}`)]

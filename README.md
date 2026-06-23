@@ -2,22 +2,21 @@
 
 [English](./README.en.md)
 
-Nexo Agent 是一个本地优先的 AI Agent 桌面与 Web 控制台。它把对话、工具调用、长期记忆、本地知识库、技能系统和定时任务放在同一个工作台中，适合构建个人或团队内网环境中的 Agent 助手。
+Nexo Agent 是一个本地优先的 AI Agent 桌面应用与 Web 控制台。它把对话、多模型编排、工具调用、长期记忆、本地知识库、技能系统、定时任务和渠道接入放在同一个工作台里，适合个人助理、研发协作和团队内部 Agent 场景。
 
-项目基于 Electron、React、TypeScript、Ant Design、Express 和 LangChain 构建。应用既可以作为 Electron 桌面端运行，也可以通过本地 Web 控制台访问同一套会话、设置和运行能力。
+项目基于 Electron、React、TypeScript、Express 与 LangChain 构建。桌面端启动时会同时拉起本地后端和本地 Web 控制台，Web 端与 Electron 共用同一套会话、配置和 Agent 运行时。
 
-## 功能概览
+## 核心能力
 
-- 多会话聊天：支持会话创建、切换、重命名、删除、持久化和流式回复。
-- OpenAI 兼容模型：可配置 API Base URL、API Key、模型、温度、规划模式、上下文轮次和最大工具步数。
-- 工具调用：基于 LangChain tool calling 执行搜索、HTTP 请求、模型子调用、计算、文件读写、记忆召回、技能搜索与安装、终端命令等工具。
-- 本地记忆：使用 SQLite 保存 `daily`、`dream`、`long_term`、`script` 四类记忆，并在有 embedding 能力时启用语义召回。
-- 梦境记忆：把每日记忆整合成可长期召回的 dream 记录，帮助跨会话保留上下文。
-- 本地知识库：支持创建、编辑、删除、浏览 Markdown 文档，并在聊天时检索相关知识内容。
-- 技能系统：加载内置技能、工作区技能和市场安装技能，将启用的技能说明注入 Agent 提示词。
-- 定时任务：支持 5 字段 Cron 任务，可定时或手动触发提示词任务，并生成任务会话。
-- 附件与日志：支持上传文本附件作为上下文，并通过日志面板查看运行日志。
-- 桌面与 Web 双端：Electron 桌面端会同时启动本地 Web 控制台，Web 端也可以独立构建后运行。
+- 多会话聊天：支持创建、切换、重命名、删除和持久化历史会话
+- 多模型配置：支持 OpenAI Compatible / Anthropic Compatible 等模型配置与主模型切换
+- Agent 工具调用：支持 `web_search`、`http_request`、`shell_command`、`file_read`、`file_write`、多模态工具等
+- 记忆系统：支持 `daily`、`dream`、`long_term`、`script` 四类记忆
+- 知识库：支持本地 Markdown 文件管理、检索与聊天上下文注入
+- 技能系统：支持内置技能、工作区技能、托管技能、市场技能
+- 定时任务：支持 Cron 任务、手动触发和任务会话沉淀
+- 渠道接入：支持 Web、飞书、钉钉、企业微信、微信公众号等渠道配置
+- 双端运行：Electron 桌面端与本地 Web 控制台共用后端
 
 ## 快速开始
 
@@ -25,7 +24,7 @@ Nexo Agent 是一个本地优先的 AI Agent 桌面与 Web 控制台。它把对
 
 - Node.js 22 或兼容版本
 - npm
-- 一个 OpenAI-compatible 模型服务 API Key
+- 可用的模型服务 API Key
 
 ### 安装依赖
 
@@ -33,230 +32,302 @@ Nexo Agent 是一个本地优先的 AI Agent 桌面与 Web 控制台。它把对
 npm install
 ```
 
-### 启动 Electron 桌面端
+### 启动桌面开发环境
 
 ```bash
 npm run dev:electron
 ```
 
-该命令会同时启动：
+会同时启动：
 
-- Vite 前端开发服务，默认地址为 `http://localhost:8106`
-- Electron 主进程 TypeScript watch
+- Vite 前端开发服务：`http://localhost:8106`
+- Electron 主进程编译监听
 - Electron 桌面窗口
-- 本地 Express Web 控制台，默认地址为 `http://localhost:9898`
+- 本地 Express Web 控制台：`http://localhost:9898`
 
-### 仅启动 Web 前端开发服务
+### 只启动 Web 前端
 
 ```bash
 npm run dev:web
 ```
 
-Vite 会监听 `http://localhost:8106`，并把 `/api` 与 `/uploads` 代理到本地后端 `http://localhost:9898`。如果只运行 `dev:web`，需要同时有后端服务可用。
+说明：
 
-### 构建后运行 Web 控制台
+- Vite 会监听 `http://localhost:8106`
+- `/api` 与 `/uploads` 会代理到 `http://localhost:9898`
+- 如果只跑 `dev:web`，需要确保本地后端已经可用
+
+### 构建并运行本地 Web 控制台
 
 ```bash
 npm run build
 npm run serve:web-console
 ```
 
-默认访问地址：
+默认地址：
 
 ```text
 http://localhost:9898
 ```
 
-## 基础配置
+## 项目架构图
 
-首次启动后，进入 Settings 页面配置模型与运行参数：
+### 运行时架构
 
-| 配置项 | 说明 |
-| --- | --- |
-| API Base URL | OpenAI 兼容接口地址，例如 `https://api.openai.com/v1` |
-| API Key | 模型服务密钥；桌面端会通过 Electron 能力保存 |
-| Model | 模型名称，例如 `gpt-4o-mini`、`deepseek-chat`、`qwen-*` |
-| Provider | OpenAI Compatible、DeepSeek、Qwen、Doubao 或 Custom |
-| Workspace Path | 文件工具默认访问的工作区根目录 |
-| Extra File Access Roots | 允许 `file_read`、`file_write` 访问的其他绝对路径 |
-| Temperature | 模型输出随机性 |
-| Max Context Turns | 请求模型时携带的最近会话轮次 |
-| Max Tool Steps | 单次回复允许的最大工具调用步数 |
-| Shell Command Timeout | `shell_command` 默认超时时间 |
-| Planning Mode | Fast、Balanced、Deep |
-| Enable Memory | 是否在聊天中召回和写入记忆 |
-| Enable Knowledge | 是否在聊天中检索本地知识库 |
+```mermaid
+flowchart LR
+  U[用户]
 
-如果未配置 API Key，聊天会返回本地演示响应；配置模型后才能使用完整 Agent 能力。
+  subgraph Desktop["Electron 桌面端"]
+    UI1[React UI]
+    PRELOAD[preload IPC Bridge]
+    MAIN[Electron Main]
+  end
+
+  subgraph Web["本地 Web 控制台"]
+    UI2[React UI]
+  end
+
+  subgraph Backend["本地 Agent 服务"]
+    API[Express API / SSE]
+    AGENT[Agent Runtime]
+    TOOLS[Tool Executors]
+    TASKS[Task Scheduler]
+    CHANNELS[Channel Runtime]
+  end
+
+  subgraph Data["本地数据层"]
+    SETTINGS[settings / model profiles]
+    SESSIONS[sessions.json]
+    MEMORY[memory.sqlite / dream memory]
+    KNOWLEDGE[knowledge/]
+    SKILLS[skills/]
+    LOGS[app.log]
+    TASKDATA[tasks.json]
+    UPLOADS[uploads/]
+  end
+
+  subgraph Model["模型与外部能力"]
+    LLM[LLM Providers]
+    SEARCH[Web Search / HTTP]
+    MEDIA[Image / Audio Models]
+  end
+
+  U --> UI1
+  U --> UI2
+
+  UI1 --> PRELOAD
+  PRELOAD --> MAIN
+  MAIN --> API
+
+  UI2 --> API
+
+  API --> AGENT
+  API --> TASKS
+  API --> CHANNELS
+
+  AGENT --> TOOLS
+  AGENT --> LLM
+  AGENT --> SEARCH
+  AGENT --> MEDIA
+
+  API <--> SETTINGS
+  API <--> SESSIONS
+  AGENT <--> MEMORY
+  AGENT <--> KNOWLEDGE
+  AGENT <--> SKILLS
+  TASKS <--> TASKDATA
+  API <--> UPLOADS
+  API <--> LOGS
+```
+
+### 分层说明
+
+1. UI 层
+   React + Ant Design，负责聊天、设置、记忆、知识库、工具、技能、任务等界面。
+2. Desktop Bridge 层
+   Electron `preload` 暴露桌面能力，`main` 负责窗口、快捷键、IPC、打开浏览器、启动本地服务。
+3. Backend 层
+   Express 提供 REST API 和 SSE；Agent Runtime 负责模型调用、上下文拼装、工具编排、循环终止。
+4. Data 层
+   使用 JSON、SQLite 和本地目录保存会话、配置、记忆、知识库、技能、任务与日志。
+5. External 层
+   对接模型供应商、网络搜索、HTTP 接口、多模态模型等外部能力。
+
+## 项目目录结构图
+
+```text
+nexoAgent/
+├─ electron/
+│  ├─ bootstrap.ts                # Electron 启动入口
+│  ├─ main.ts                     # 窗口、IPC、快捷键、本地服务启动
+│  ├─ preload.ts                  # 向前端暴露桌面能力
+│  ├─ memory.ts                   # 记忆系统、SQLite、dream memory
+│  └─ server/
+│     ├─ index.ts                 # Express App 入口
+│     ├─ agent.ts                 # Agent 主循环、工具调用、上下文管理
+│     ├─ settings.ts              # 运行时设置默认值与合并逻辑
+│     ├─ sessions.ts              # 会话持久化
+│     ├─ knowledge.ts             # 知识库加载与检索
+│     ├─ skills.ts                # 技能发现、加载、安装、启停
+│     ├─ tasks.ts                 # 定时任务调度
+│     ├─ channel-runtime.ts       # 渠道消息接入运行时
+│     ├─ model-runtime.ts         # 模型调用封装
+│     ├─ model-profiles.ts        # 模型配置管理
+│     ├─ token-budget.ts          # 上下文预算与压缩
+│     ├─ run-control.ts           # 中断与运行控制
+│     ├─ sse.ts                   # 流式事件推送
+│     ├─ routes/                  # 各类 API 路由
+│     └─ tools/                   # 工具注册与执行器
+├─ src/
+│  ├─ components/
+│  │  ├─ Layout/                  # 主布局与导航
+│  │  ├─ SessionList/             # 会话侧栏
+│  │  ├─ ChatPanel/               # 聊天面板与消息渲染
+│  │  ├─ Memory/                  # 记忆面板
+│  │  ├─ Knowledge/               # 知识库面板
+│  │  ├─ Tools/                   # 工具管理面板
+│  │  ├─ Skills/                  # 技能管理面板
+│  │  ├─ Tasks/                   # 定时任务面板
+│  │  ├─ Channels/                # 渠道配置面板
+│  │  ├─ Logs/                    # 日志面板
+│  │  ├─ Settings/                # 设置与模型配置
+│  │  └─ Common/                  # 通用组件
+│  ├─ services/api.ts             # 前端 API 访问层
+│  ├─ store/chat.ts               # 聊天状态、会话、流式事件
+│  ├─ shared/                     # 前后端共享类型与常量
+│  ├─ i18n/                       # 国际化
+│  └─ theme/                      # 主题系统
+├─ nexo/
+│  ├─ tools.json                  # 内置工具元数据
+│  └─ skills/                     # 内置技能
+├─ docs/                          # 项目文档
+├─ openspec/                      # OpenSpec 变更与规范
+├─ assets/                        # 图标与静态资源
+├─ scripts/                       # 构建与验证脚本
+├─ README.md
+└─ README.en.md
+```
+
+## 关键模块说明
+
+### 1. Electron 层
+
+- `electron/main.ts`
+  负责创建窗口、注册快捷键、处理 IPC、打开外部浏览器、启动本地 Express 服务
+- `electron/preload.ts`
+  通过 `contextBridge` 给前端暴露 `runtimeInfo`、设置读写、打开浏览器等桌面能力
+- `electron/bootstrap.ts`
+  处理 Electron 启动入口和重新拉起主进程
+
+### 2. Agent Runtime 层
+
+- `electron/server/agent.ts`
+  项目的核心运行时，负责：
+  - 构造系统提示词
+  - 组装会话上下文
+  - 调用主模型
+  - 接收工具调用
+  - 执行工具并继续下一轮
+  - 处理循环终止、人工中断、上下文压缩
+- `electron/server/model-runtime.ts`
+  负责不同模型供应商的统一调用封装
+- `electron/server/token-budget.ts`
+  负责上下文预算、压缩阈值和 prompt token 估算
+
+### 3. API / 流式通信层
+
+- `electron/server/routes/`
+  提供聊天、会话、记忆、知识库、工具、技能、任务、渠道、设置等 API
+- `electron/server/sse.ts`
+  提供流式输出队列，前端通过 SSE 订阅 Agent 过程事件
+
+### 4. 数据与本地存储层
+
+默认数据目录：
+
+```text
+%USERPROFILE%/.NexoAgent
+```
+
+主要内容包括：
+
+- `sessions.json`：聊天会话
+- `memory.sqlite`：记忆数据库
+- `knowledge/`：本地知识库文件
+- `skills/`：托管技能与市场技能
+- `tasks.json`：定时任务配置
+- `uploads/`：上传附件
+- `app.log`：运行日志
+- `model-profiles.json`：模型配置
+
+### 5. 前端 UI 层
+
+主要由以下面板构成：
+
+- Chat：聊天与工具过程展示
+- Memory：记忆查看、搜索、清理
+- Knowledge：知识库文件管理
+- Tools：工具启停与 MCP 配置
+- Skills：技能启停与删除
+- Tasks：定时任务管理
+- Channels：渠道配置
+- Logs：运行日志
+- Settings：模型、目录、运行参数配置
+
+## 默认端口
+
+| 服务 | 端口 | 说明 |
+| --- | --- | --- |
+| Vite Dev Server | `8106` | 前端开发服务 |
+| Express API / Web Console | `9898` | 本地后端与 Web 控制台 |
+
+定义位置：
+
+- [src/shared/ports.ts](./src/shared/ports.ts)
 
 ## 常用脚本
 
 | 命令 | 说明 |
 | --- | --- |
-| `npm run dev:web` | 启动 Vite Web 开发服务 |
-| `npm run dev:electron` | 启动 Electron 桌面开发环境 |
-| `npm run build:web` | 类型检查并构建 Web 前端 |
-| `npm run build:electron` | 编译 Electron 主进程 |
-| `npm run build` | 构建完整应用 |
-| `npm run serve:web-console` | 运行构建后的本地 Web 控制台 |
+| `npm run dev:web` | 启动 Vite 前端开发服务 |
+| `npm run dev:electron` | 启动 Electron 开发环境 |
+| `npm run build:web` | 构建 Web 前端 |
+| `npm run build:electron` | 编译 Electron 主进程与服务端 |
+| `npm run build` | 完整构建 |
+| `npm run serve:web-console` | 启动构建后的本地 Web 控制台 |
+| `npm run typecheck` | TypeScript 类型检查 |
 | `npm run preview` | 预览 Vite 构建产物 |
-| `npm run typecheck` | 执行前后端 TypeScript 类型检查 |
-| `npm run package` | 使用 electron-builder 打包桌面应用 |
+| `npm run package` | 打包桌面应用 |
 
-打包产物默认输出到：
+构建产物默认输出到：
 
 ```text
 release/
 ```
 
-## 技术栈
+## 开发建议
 
-| 层级 | 技术 |
-| --- | --- |
-| 桌面容器 | Electron 33 |
-| 前端 | React 18、TypeScript、Ant Design 5 |
-| 状态管理 | Zustand |
-| 构建工具 | Vite 6 |
-| Agent 编排 | LangChain、OpenAI-compatible Chat API |
-| 后端服务 | Express、Server-Sent Events |
-| 本地存储 | JSON 文件、SQLite/sql.js |
-| 记忆检索 | OpenAI Embeddings、Chroma、SQLite 关键词降级检索 |
-| 打包 | electron-builder |
-
-## 项目结构
-
-```text
-nexoAgent/
-├── electron/
-│   ├── bootstrap.ts              # Electron 启动入口
-│   ├── main.ts                   # 桌面窗口、IPC、设置保存、本地 Web 服务
-│   ├── memory.ts                 # SQLite 记忆、梦境整合、向量召回
-│   ├── preload.ts                # Electron preload bridge
-│   └── server/
-│       ├── agent.ts              # LangChain Agent 循环、工具调用、上下文拼装
-│       ├── routes/               # settings/chat/session/memory/knowledge/tools 等 API
-│       ├── tools/                # 工具执行器与工具注册表
-│       ├── skills.ts             # 技能加载、开关、市场安装
-│       ├── knowledge.ts          # 本地知识库读取与检索
-│       └── tasks.ts              # 定时任务运行逻辑
-├── src/
-│   ├── components/               # Chat、Memory、Knowledge、Tools、Skills、Tasks 等 UI
-│   ├── services/api.ts           # Electron IPC 与 Web fetch 的双通道 API 适配
-│   ├── store/chat.ts             # 会话、消息流、工具调用状态
-│   ├── shared/                   # 前后端共享类型、设置和端口常量
-│   └── theme/                    # 主题配置
-├── nexo/
-│   ├── tools.json                # 内置工具元数据
-│   └── skills/                   # 内置技能
-├── docs/                         # 项目文档
-├── openspec/                     # OpenSpec 变更与能力规格
-└── .nexo-data/                   # 本地运行数据，开发运行后生成
-```
-
-## Agent 工具
-
-内置工具定义在 `nexo/tools.json`，执行器位于 `electron/server/tools/`。
-
-| 工具 | 用途 |
-| --- | --- |
-| `web_search` | 搜索近期信息并返回链接与摘要 |
-| `http_request` | 发送 HTTP 请求并返回响应预览 |
-| `invoke_model` | 调用默认模型或已配置的模型配置执行子任务 |
-| `calculator` | 计算数学表达式 |
-| `file_read` | 在允许目录内读取文件或目录 |
-| `file_write` | 在允许目录内写入或追加文件 |
-| `recall_memory` | 搜索每日、梦境、长期或脚本记忆 |
-| `search_skills` | 搜索技能市场或本地技能 |
-| `create_skill` | 从对话中创建本地托管技能 |
-| `install_skill` | 从支持的技能市场安装技能 |
-| `create_scheduled_task` | 创建会出现在 Tasks 面板并由 Nexo 调度器执行的定时任务 |
-| `shell_command` | 在工作区内执行终端命令 |
-
-文件读写工具受工作区路径和额外访问目录限制。访问外部路径前，需要在 Settings 中授权对应目录，或通过终端命令处理。
-
-## 记忆系统
-
-记忆系统位于 `electron/memory.ts`，数据默认保存在 `.nexo-data/` 下。
-
-| 类型 | 说明 |
-| --- | --- |
-| `daily` | 按自然日保存从对话中抽取的事实 |
-| `dream` | 将某一天的 daily、long_term、script 记忆汇总成可召回摘要 |
-| `long_term` | 保存跨会话仍然有效的长期事实 |
-| `script` | 保存流程运行状态和关键数据，帮助脚本或工作流保持一致 |
-
-主数据存储在 `.nexo-data/memory.sqlite`。当 API Key 与 embedding 能力可用时，系统会尝试使用 Chroma 做语义检索；当向量能力不可用时，会降级到 SQLite 关键词匹配。
-
-## 知识库
-
-知识库提供本地 Markdown 文件管理能力：
-
-- 浏览知识目录树
-- 新建 Markdown 文件
-- 编辑和删除知识文件
-- Markdown 预览
-- 聊天时按查询检索相关知识内容
-
-知识库适合存放项目说明、团队规则、常用流程、业务背景和模型需要长期参考的资料。
-
-## 技能系统
-
-技能是可注入 Agent 提示词的能力说明。Nexo Agent 支持：
-
-- 内置技能：随项目放在 `nexo/skills/`
-- 工作区技能：从工作区发现的技能
-- 托管技能：通过 UI 或工具创建的本地技能
-- 市场技能：从支持的技能市场搜索和安装
-
-在 Skills 面板中可以启用、禁用和删除非内置技能。启用后的技能会在对话时被注入系统提示词，影响 Agent 的行为方式。
-
-## 定时任务
-
-Tasks 面板支持创建 5 字段 Cron 任务：
-
-```text
-0 9 * * *    # 每天 9 点运行
-```
-
-每个任务包含名称、Cron 表达式、提示词和启用状态。任务可以定时触发，也可以手动运行。运行完成后会生成一条任务会话，方便回看结果。
-
-## 本地数据
-
-开发运行时，本地数据主要保存在：
-
-```text
-.nexo-data/
-```
-
-常见内容包括：
-
-- 会话记录
-- 设置
-- 记忆 SQLite 数据库
-- Chroma 向量数据
-- 知识库文件
-- 技能与市场配置
-- 任务和日志
-- 上传附件
-
-该目录通常不应提交到版本库。
+- 修改 Agent 行为优先看 `electron/server/agent.ts`
+- 新增工具时同步更新：
+  - `nexo/tools.json`
+  - `electron/server/tools/executors.ts`
+- 修改共享类型优先看 `src/shared/types.ts`
+- 涉及模型配置时关注：
+  - `electron/server/model-profiles.ts`
+  - `electron/server/model-runtime.ts`
+  - `src/components/Settings/index.tsx`
+- 涉及聊天渲染时关注：
+  - `src/store/chat.ts`
+  - `src/components/ChatPanel/`
 
 ## 当前边界
 
-- 飞书、钉钉、微信、企业微信等通道页面目前以配置保存为主，还不是完整消息收发运行时。
-- MCP 服务目前主要是配置管理，尚未完整接入运行时工具发现、进程管理和调用链路。
-- 知识库检索偏轻量，适合本地 Markdown 召回；复杂企业级 RAG 仍需要进一步扩展。
-- 图片附件目前主要展示和保存元数据；图像理解需要后续接入视觉模型路径。
-- Web 密码认证接口已存在，但前端尚未完整实现登录拦截。
-
-## 开发建议
-
-- 修改 Agent 行为优先查看 `electron/server/agent.ts`。
-- 新增工具时同时更新 `nexo/tools.json` 和 `electron/server/tools/executors.ts`。
-- 修改共享类型时查看 `src/shared/types.ts`。
-- 涉及记忆结构时注意 SQLite schema、迁移逻辑和 Chroma 降级路径。
-- 涉及 OpenSpec 流程时查看 `openspec/` 下的变更和能力文档。
+- 渠道页目前以配置管理为主，不是完整的 IM 生产级接入平台
+- MCP 服务当前主要是配置入口，完整发现与调用链路仍可继续增强
+- 知识库检索偏轻量，适合本地 Markdown 召回，不等同企业级 RAG
+- 多模态能力依赖模型配置是否具备图像/音频能力
 
 ## License
 
-本项目使用 Apache License 2.0。详见 [LICENSE](./LICENSE)。
+本项目使用 Apache License 2.0，详见 [LICENSE](./LICENSE)。

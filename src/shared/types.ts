@@ -225,6 +225,21 @@ export interface McpServerConfig {
   name: string;
   command: string;
   args: string[];
+  env?: Record<string, string>;
+}
+
+export type McpServerConnectionStatus = "connected" | "empty" | "error";
+
+export interface McpServerStatus {
+  serverName: string;
+  toolCount: number;
+  status: McpServerConnectionStatus;
+  error?: string;
+  toolNames: string[];
+}
+
+export interface McpServerListItem extends McpServerConfig {
+  runtimeStatus?: McpServerStatus;
 }
 
 export interface KnowledgeItem {
