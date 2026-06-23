@@ -1,6 +1,7 @@
-import React, { useState } from "react";
-import { Button, Tooltip, Popconfirm, Typography, Input } from "antd";
-import { PlusOutlined, DeleteOutlined, EditOutlined, CheckOutlined } from "@ant-design/icons";
+import React, { useEffect, useState } from "react";
+import { Button, Input, Modal, Tooltip, Typography } from "antd";
+import { PlusOutlined, MenuUnfoldOutlined, MenuFoldOutlined, CheckOutlined } from "@ant-design/icons";
+import { OverflowMenuButton } from "../Common/OverflowMenuButton";
 import { useChatStore, type SessionMeta } from "../../store/chat";
 import { useTheme } from "../../theme";
 import { useI18n } from "../../i18n";
@@ -14,13 +15,38 @@ const SessionItem: React.FC<{ session: SessionMeta; active: boolean }> = ({ sess
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(session.title);
 
+  useEffect(() => {
+    setTitle(session.title);
+  }, [session.title]);
+
   const confirmRename = () => {
     if (title.trim()) void renameSession(session.id, title.trim());
     setEditing(false);
   };
 
+  const openActionMenu = (key: string) => {
+    if (key === "rename") {
+      setTitle(session.title);
+      setEditing(true);
+      return;
+    }
+
+    if (key === "delete") {
+      Modal.confirm({
+        title: `${t("delete")}?`,
+        okText: t("delete"),
+        cancelText: t("cancel"),
+        okButtonProps: { danger: true },
+        onOk: async () => {
+          await deleteSession(session.id);
+        },
+      });
+    }
+  };
+
   return (
     <div
+      className="session-row"
       onClick={() => !editing && void selectSession(session.id)}
       style={{
         display: "flex", alignItems: "center", gap: 6, padding: "8px 10px",
@@ -55,19 +81,15 @@ const SessionItem: React.FC<{ session: SessionMeta; active: boolean }> = ({ sess
           >
             {session.title}
           </Text>
-          <div style={{ display: "flex", gap: 2, opacity: 0 }} className="session-actions">
-            <Tooltip title={t("rename")}>
-              <Button size="small" type="text" icon={<EditOutlined />}
-                onClick={(e) => { e.stopPropagation(); setEditing(true); }}
-                style={{ color: colors.textSecondary, padding: "0 4px" }}
-              />
-            </Tooltip>
-            <Popconfirm title={t("delete") + "?"} onConfirm={(e) => { e?.stopPropagation(); void deleteSession(session.id); }} okText={t("delete")} cancelText={t("cancel")}>
-              <Button size="small" type="text" icon={<DeleteOutlined />}
-                onClick={(e) => e.stopPropagation()}
-                style={{ color: colors.textSecondary, padding: "0 4px" }}
-              />
-            </Popconfirm>
+          <div style={{ display: "flex", gap: 2, opacity: 1 }} className="session-actions">
+            <OverflowMenuButton
+              color={colors.textSecondary}
+              items={[
+                { key: "rename", label: t("rename") },
+                { key: "delete", label: t("delete"), danger: true },
+              ]}
+              onItemClick={openActionMenu}
+            />
           </div>
         </>
       )}
@@ -75,34 +97,67 @@ const SessionItem: React.FC<{ session: SessionMeta; active: boolean }> = ({ sess
   );
 };
 
-export const SessionList: React.FC = () => {
+interface SessionListProps {
+  collapsed: boolean;
+  onToggleWidth: () => void;
+}
+
+export const SessionList: React.FC<SessionListProps> = ({ collapsed, onToggleWidth }) => {
   const { sessions, activeSessionId, newSession } = useChatStore();
   const { colors } = useTheme();
-  const { t } = useI18n();
+  const { lang, t } = useI18n();
+
+  const widthTooltip = collapsed
+    ? (lang === "zh" ? "展开历史记录" : "Expand history")
+    : (lang === "zh" ? "折叠历史记录" : "Collapse history");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ padding: "12px 10px 8px" }}>
-        <Button
-          icon={<PlusOutlined />}
-          block
-          onClick={() => void newSession()}
-          style={{
-            background: colors.bgTertiary,
-            color: colors.textMuted,
-            border: `1px solid ${colors.borderStrong}`,
-            borderRadius: 8,
-          }}
-        >
-          {t("newChat")}
-        </Button>
+      <div
+        style={{
+          padding: collapsed ? "12px 10px" : "12px 10px 8px",
+          display: "flex",
+          gap: 8,
+          flexDirection: collapsed ? "column" : "row",
+        }}
+      >
+        {!collapsed && (
+          <Button
+            icon={<PlusOutlined />}
+            onClick={() => void newSession()}
+            style={{
+              flex: 1,
+              background: colors.bgTertiary,
+              color: colors.textMuted,
+              border: `1px solid ${colors.borderStrong}`,
+              borderRadius: 8,
+            }}
+          >
+            {t("newChat")}
+          </Button>
+        )}
+        <Tooltip title={widthTooltip}>
+          <Button
+            onClick={onToggleWidth}
+            style={{
+              width: collapsed ? "100%" : 40,
+              flexShrink: 0,
+              background: colors.bgTertiary,
+              color: colors.textMuted,
+              border: `1px solid ${colors.borderStrong}`,
+              borderRadius: 8,
+            }}
+            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+          />
+        </Tooltip>
       </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: "0 6px" }}>
-        <style>{`.session-actions { opacity: 0 } div:hover .session-actions { opacity: 1 }`}</style>
-        {sessions.map((s) => (
-          <SessionItem key={s.id} session={s} active={s.id === activeSessionId} />
-        ))}
-      </div>
+      {!collapsed && (
+        <div style={{ flex: 1, overflowY: "auto", padding: "0 6px" }}>
+          {sessions.map((s) => (
+            <SessionItem key={s.id} session={s} active={s.id === activeSessionId} />
+          ))}
+        </div>
+      )}
     </div>
   );
 };

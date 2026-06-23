@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Badge, Divider, Layout, Tooltip } from "antd";
 import {
   ApiOutlined,
@@ -27,17 +27,37 @@ import { Settings } from "../Settings";
 import { useChatStore } from "../../store/chat";
 import { useTheme } from "../../theme";
 import { useI18n } from "../../i18n";
+import { getApiBase, isElectron } from "../../services/api";
 
 const { Content, Sider } = Layout;
 const brandIconUrl = new URL("../../../assets/nexoagent-icon.svg", import.meta.url).href;
+const COLLAPSED_SESSION_SIDER_WIDTH = 60;
+const MIN_SESSION_SIDER_WIDTH = 220;
+const DEFAULT_SESSION_SIDER_WIDTH = 280;
+const MAX_SESSION_SIDER_WIDTH = 520;
+const DEFAULT_EXPANDED_SESSION_SIDER_WIDTH = 340;
 
 type View = "chat" | "memory" | "knowledge" | "tools" | "skills" | "tasks" | "logs" | "channels" | "settings";
 
 export const AppLayout: React.FC = () => {
   const [view, setView] = useState<View>("chat");
+  const [sessionSiderCollapsed, setSessionSiderCollapsed] = useState(() => localStorage.getItem("nexo-session-sider-collapsed") === "true");
+  const [sessionSiderWidth, setSessionSiderWidth] = useState(() => {
+    const saved = Number(localStorage.getItem("nexo-session-sider-width"));
+    return Number.isFinite(saved) ? Math.min(MAX_SESSION_SIDER_WIDTH, Math.max(MIN_SESSION_SIDER_WIDTH, saved)) : DEFAULT_SESSION_SIDER_WIDTH;
+  });
+  const [preferredExpandedWidth, setPreferredExpandedWidth] = useState(() => {
+    const saved = Number(localStorage.getItem("nexo-session-sider-expanded-width"));
+    return Number.isFinite(saved) ? Math.min(MAX_SESSION_SIDER_WIDTH, Math.max(MIN_SESSION_SIDER_WIDTH, saved)) : DEFAULT_EXPANDED_SESSION_SIDER_WIDTH;
+  });
+  const [resizingSessionSider, setResizingSessionSider] = useState(false);
   const { ensureRuntimeReady, loadSessions, newSession, loadSettings } = useChatStore();
   const { mode, colors, toggleTheme } = useTheme();
   const { lang, setLang, t } = useI18n();
+  const resizeOriginRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const desktopApi = typeof window !== "undefined" && "nexoDesktop" in window
+    ? (window as typeof window & { nexoDesktop?: { openExternal?: (url: string) => Promise<void> } }).nexoDesktop
+    : undefined;
 
   useEffect(() => {
     let disposed = false;
@@ -72,6 +92,68 @@ export const AppLayout: React.FC = () => {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    localStorage.setItem("nexo-session-sider-collapsed", String(sessionSiderCollapsed));
+  }, [sessionSiderCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem("nexo-session-sider-width", String(sessionSiderWidth));
+  }, [sessionSiderWidth]);
+
+  useEffect(() => {
+    localStorage.setItem("nexo-session-sider-expanded-width", String(preferredExpandedWidth));
+  }, [preferredExpandedWidth]);
+
+  useEffect(() => {
+    if (!resizingSessionSider) return undefined;
+
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const handlePointerMove = (event: MouseEvent) => {
+      const origin = resizeOriginRef.current;
+      if (!origin) return;
+      const nextWidth = Math.min(
+        MAX_SESSION_SIDER_WIDTH,
+        Math.max(MIN_SESSION_SIDER_WIDTH, origin.startWidth + (event.clientX - origin.startX))
+      );
+      setSessionSiderWidth(nextWidth);
+      if (nextWidth > MIN_SESSION_SIDER_WIDTH) {
+        setPreferredExpandedWidth(nextWidth);
+      }
+    };
+
+    const stopResize = () => {
+      resizeOriginRef.current = null;
+      setResizingSessionSider(false);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+
+    window.addEventListener("mousemove", handlePointerMove);
+    window.addEventListener("mouseup", stopResize);
+
+    return () => {
+      window.removeEventListener("mousemove", handlePointerMove);
+      window.removeEventListener("mouseup", stopResize);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+  }, [resizingSessionSider]);
+
+  const toggleSessionSiderWidth = () => {
+    setSessionSiderCollapsed((current) => !current);
+  };
+
+  const startSessionResize = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (sessionSiderCollapsed) return;
+    event.preventDefault();
+    resizeOriginRef.current = { startX: event.clientX, startWidth: sessionSiderWidth };
+    setResizingSessionSider(true);
+  };
+
   const iconButtonStyle = (active: boolean): React.CSSProperties => ({
     width: 36,
     height: 36,
@@ -93,6 +175,15 @@ export const AppLayout: React.FC = () => {
       </div>
     </Tooltip>
   );
+
+  const openWebConsole = async () => {
+    const targetUrl = getApiBase() || "http://localhost:9898";
+    if (isElectron() && desktopApi?.openExternal) {
+      await desktopApi.openExternal(targetUrl);
+      return;
+    }
+    window.open(targetUrl, "_blank", "noopener,noreferrer");
+  };
 
   return (
     <Layout style={{ height: "100vh", background: colors.bgPrimary }}>
@@ -135,9 +226,9 @@ export const AppLayout: React.FC = () => {
 
           {navItem("settings", <SettingOutlined />, t("settings"))}
 
-          <Tooltip title="localhost:9898" placement="right">
+          <Tooltip title="打开浏览器" placement="right">
             <Badge dot status="success">
-              <div style={iconButtonStyle(false)}>
+              <div onClick={() => void openWebConsole()} style={iconButtonStyle(false)}>
                 <GlobalOutlined />
               </div>
             </Badge>
@@ -146,9 +237,30 @@ export const AppLayout: React.FC = () => {
       </Sider>
 
       {view === "chat" && (
-        <Sider width={220} style={{ background: colors.bgSecondary, borderRight: `1px solid ${colors.border}`, overflow: "hidden" }}>
-          <SessionList />
-        </Sider>
+        <>
+          <Sider
+            width={sessionSiderCollapsed ? COLLAPSED_SESSION_SIDER_WIDTH : sessionSiderWidth}
+            style={{ background: colors.bgSecondary, borderRight: `1px solid ${colors.border}`, overflow: "hidden" }}
+          >
+            <SessionList
+              collapsed={sessionSiderCollapsed}
+              onToggleWidth={toggleSessionSiderWidth}
+            />
+          </Sider>
+          {!sessionSiderCollapsed && (
+            <div
+              onMouseDown={startSessionResize}
+              style={{
+                width: 10,
+                cursor: "col-resize",
+                background: resizingSessionSider ? colors.accent : colors.bgPrimary,
+                borderRight: `1px solid ${colors.border}`,
+                transition: resizingSessionSider ? "none" : "background 0.15s",
+                flexShrink: 0,
+              }}
+            />
+          )}
+        </>
       )}
 
       <Content style={{ display: "flex", flexDirection: "column", overflow: "auto", background: colors.bgPrimary }}>

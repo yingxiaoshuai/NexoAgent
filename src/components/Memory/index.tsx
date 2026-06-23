@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { List, Button, Popconfirm, Empty, Typography, Space, Tag, Tabs, DatePicker, Input, message } from "antd";
-import { DeleteOutlined, ClearOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
+import { List, Button, Popconfirm, Empty, Typography, Space, Tag, Tabs, DatePicker, Input, Modal, message } from "antd";
+import { ClearOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { apiGet, apiDelete, apiPost } from "../../services/api";
 import { useTheme } from "../../theme";
+import { OverflowMenuButton } from "../Common/OverflowMenuButton";
 
 const { Text } = Typography;
 
@@ -85,6 +86,18 @@ export const MemoryPanel: React.FC = () => {
   const del = async (id: string) => {
     await apiDelete(`/api/memory/${id}`);
     setEntries((current) => current.filter((item) => item.id !== id));
+  };
+
+  const confirmDelete = (item: MemoryEntry) => {
+    Modal.confirm({
+      title: "删除这条记忆？",
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await del(item.id);
+      },
+    });
   };
 
   const clearAll = async () => {
@@ -213,15 +226,14 @@ export const MemoryPanel: React.FC = () => {
                   <List.Item
                     style={{ borderBottom: `1px solid ${colors.border}`, padding: "12px 0" }}
                     actions={[
-                      <Popconfirm
-                        key="delete"
-                        title="删除这条记忆？"
-                        onConfirm={() => void del(item.id)}
-                        okText="删除"
-                        cancelText="取消"
-                      >
-                        <Button type="text" icon={<DeleteOutlined />} size="small" style={{ color: colors.textMuted }} />
-                      </Popconfirm>,
+                      <OverflowMenuButton
+                        key="more"
+                        color={colors.textMuted}
+                        items={[{ key: "delete", label: "删除", danger: true }]}
+                        onItemClick={(key) => {
+                          if (key === "delete") confirmDelete(item);
+                        }}
+                      />,
                     ]}
                   >
                     <Space direction="vertical" size={4} style={{ flex: 1 }}>

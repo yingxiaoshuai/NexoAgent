@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { Table, Button, Modal, Form, Input, Switch, Tag, Popconfirm, Space, message } from "antd";
-import { EditOutlined, DeleteOutlined, PlusOutlined, PlayCircleOutlined } from "@ant-design/icons";
+import { Table, Button, Modal, Form, Input, Switch, Tag, message } from "antd";
+import { PlusOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { apiGet, apiPost, apiDelete, apiPatch } from "../../services/api";
 import { useTheme } from "../../theme";
+import { OverflowMenuButton } from "../Common/OverflowMenuButton";
 
 interface Task {
   id: string;
@@ -67,6 +68,18 @@ export default function Tasks() {
     void fetchTasks();
   };
 
+  const confirmDelete = (task: Task) => {
+    Modal.confirm({
+      title: "确认删除这条任务？",
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await handleDelete(task.id);
+      },
+    });
+  };
+
   const handleRun = async (id: string) => {
     await apiPost(`/api/tasks/${id}/run`, {});
     void message.success("任务已提交，完成后会生成一条任务会话");
@@ -115,13 +128,27 @@ export default function Tasks() {
       title: "操作",
       key: "actions",
       render: (_: unknown, record: Task) => (
-        <Space>
-          <Button type="text" icon={<PlayCircleOutlined />} onClick={() => void handleRun(record.id)} />
-          <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(record)} />
-          <Popconfirm title="确认删除这条任务？" onConfirm={() => void handleDelete(record.id)} okText="删除" cancelText="取消">
-            <Button type="text" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
+        <OverflowMenuButton
+          color={colors.textSecondary}
+          items={[
+            { key: "run", label: "立即运行" },
+            { key: "edit", label: "编辑" },
+            { key: "delete", label: "删除", danger: true },
+          ]}
+          onItemClick={(key) => {
+            if (key === "run") {
+              void handleRun(record.id);
+              return;
+            }
+            if (key === "edit") {
+              openEdit(record);
+              return;
+            }
+            if (key === "delete") {
+              confirmDelete(record);
+            }
+          }}
+        />
       ),
     },
   ];

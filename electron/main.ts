@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, safeStorage } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, shell, safeStorage } from "electron";
 import fs from "node:fs/promises";
 import path from "node:path";
 import http from "node:http";
@@ -66,6 +66,7 @@ let mainWindow: BrowserWindow | null = null;
 let httpServer: http.Server | null = null;
 let webServerPort = 9898;
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
+const TOGGLE_DEVTOOLS_SHORTCUT = process.platform === "darwin" ? "Command+Alt+L" : "Control+Alt+L";
 
 if (!gotSingleInstanceLock) {
   app.quit();
@@ -264,6 +265,7 @@ function createWindow() {
     title: "Nexo Agent",
     backgroundColor: "#0e1726",
     show: false,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -275,6 +277,11 @@ function createWindow() {
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
   });
+
+  if (process.platform !== "darwin") {
+    mainWindow.removeMenu();
+    mainWindow.setMenuBarVisibility(false);
+  }
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -292,11 +299,68 @@ function createWindow() {
     }
   });
 
+  mainWindow.webContents.on("before-input-event", (event, input) => {
+    const isToggleShortcut =
+      input.type === "keyDown"
+      && (
+        input.key === "F12"
+        || ((input.control || input.meta) && input.shift && input.key.toUpperCase() === "I")
+      );
+
+    if (isToggleShortcut) {
+      event.preventDefault();
+      toggleDeveloperTools();
+    }
+  });
+
   if (isDev) {
     void mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL as string);
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     void mainWindow.loadURL(getDesktopAppUrl());
+  }
+}
+
+function focusMainWindow() {
+  if (!mainWindow) {
+    createWindow();
+  }
+
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  mainWindow.focus();
+}
+
+function toggleDeveloperTools() {
+  focusMainWindow();
+  if (!mainWindow) return;
+
+  const applyToggle = () => {
+    if (!mainWindow) return;
+    if (mainWindow.webContents.isDevToolsOpened()) {
+      mainWindow.webContents.closeDevTools();
+    } else {
+      mainWindow.webContents.openDevTools({ mode: "detach" });
+    }
+  };
+
+  if (mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.once("did-finish-load", applyToggle);
+    return;
+  }
+
+  applyToggle();
+}
+
+function registerDesktopShortcuts() {
+  const registered = globalShortcut.register(TOGGLE_DEVTOOLS_SHORTCUT, toggleDeveloperTools);
+  if (!registered) {
+    console.warn(`[shortcut] failed to register ${TOGGLE_DEVTOOLS_SHORTCUT}`);
   }
 }
 
@@ -315,6 +379,10 @@ ipcMain.handle("settings:save", async (_event, settings: AgentSettings) => {
   pushSettingsToBackend(result, cachedApiKey);
   return result;
 });
+ipcMain.handle("shell:openExternal", async (_event, url: string) => {
+  if (typeof url !== "string" || !url.trim()) return;
+  await shell.openExternal(url.trim());
+});
 
 if (gotSingleInstanceLock) {
   app.on("second-instance", () => {
@@ -327,6 +395,7 @@ if (gotSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     await startHttpServer();
+    registerDesktopShortcuts();
     if (process.platform === "darwin" && app.dock) {
       app.dock.setIcon(appAssetPath("nexoagent-icon.png"));
     }
@@ -345,4 +414,8 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
 });

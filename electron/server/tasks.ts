@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMessage } from "../../src/shared/types";
 import { streamFromLLM } from "./agent";
+import { clearRun, registerRun } from "./run-control";
 import { serverLog } from "./logger";
 import { buildRuntimeSettings } from "./settings";
 import { ensureSessionsLoaded, getSessionsMap, saveSessionsToDisk } from "./sessions";
@@ -72,7 +73,7 @@ export async function executeTask(task: ScheduledTask, getStoredApiKey: () => st
     role: "user",
     content: task.prompt,
     createdAt: now,
-    status: "done",
+    status: "completed",
   };
 
   const session: Session = {
@@ -83,19 +84,18 @@ export async function executeTask(task: ScheduledTask, getStoredApiKey: () => st
     updatedAt: now,
   };
   getSessionsMap().set(sessionId, session);
+  registerRun(requestId);
   createSseQueue(requestId);
 
   const settings = buildRuntimeSettings();
   const doneEvent = await streamFromLLM(settings, session, requestId, getStoredApiKey());
-  if (doneEvent) {
-    session.messages.push({
-      id: randomUUID(),
-      role: "assistant",
-      content: doneEvent.content,
-      createdAt: new Date().toISOString(),
-      status: "done",
-    });
-  }
+  session.messages.push({
+    id: randomUUID(),
+    role: "assistant",
+    content: doneEvent.content,
+    createdAt: new Date().toISOString(),
+    status: doneEvent.status,
+  });
   session.updatedAt = new Date().toISOString();
   task.lastRun = session.updatedAt;
   if (task.runOnce) {
@@ -103,6 +103,7 @@ export async function executeTask(task: ScheduledTask, getStoredApiKey: () => st
   }
   await saveTasks();
   await saveSessionsToDisk();
+  clearRun(requestId);
   scheduleSseCleanup(requestId);
   serverLog(`INFO Task executed: ${task.name}`);
 }

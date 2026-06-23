@@ -8,6 +8,7 @@ import { circuitBreakerInfoFromDecision, createAgentLoopCircuitBreaker } from ".
 import { retrieveKnowledgeContext } from "./knowledge";
 import { resolveAndPersistModelContextBudget, getEnabledModelCapabilitySummary } from "./model-profiles";
 import { callChatCompletion, resolvePrimaryModelConfig } from "./model-runtime";
+import { isRunInterrupted } from "./run-control";
 import { pushEvent } from "./sse";
 import { getWebSettings } from "./settings";
 import { getEnabledSkillInstructions } from "./skills";
@@ -20,8 +21,22 @@ import { getAllowedFileRoots, getWorkspaceRoot, isPathInsideWorkspace, workspace
 const FILE_TOOL_NAMES = new Set(["file_read", "file_write"]);
 const MISSING_PRIMARY_MODEL_MESSAGE = "\u672a\u914d\u7f6e\u4e3b\u6a21\u578b\u3002\u8bf7\u5230 Settings > Models \u65b0\u589e\u4e00\u4e2a\u6a21\u578b\uff0c\u586b\u5199 API Key\uff0c\u5e76\u5c06\u5176\u8bbe\u4e3a Primary\u3002";
 const MISSING_API_KEY_MESSAGE = "\u5f53\u524d\u4e3b\u6a21\u578b\u672a\u914d\u7f6e API Key\u3002\u8bf7\u5230 Settings > Models \u8865\u5145\u540e\u518d\u8bd5\u3002";
-const MAX_STEPS_FALLBACK_MESSAGE = "\n\n\u5df2\u8fbe\u5230\u5de5\u5177\u8c03\u7528\u6b65\u6570\u4e0a\u9650\u3002\u6211\u5df2\u6267\u884c\u5b8c\u524d\u9762\u7684\u5de5\u5177\u6b65\u9aa4\uff0c\u4f46\u8fd8\u6ca1\u62ff\u5230\u6a21\u578b\u7684\u6700\u7ec8\u603b\u7ed3\u3002\u8bf7\u7ee7\u7eed\u53d1\u9001\u201c\u7ee7\u7eed\u201d\uff0c\u6211\u4f1a\u57fa\u4e8e\u5df2\u6709\u7ed3\u679c\u63a5\u7740\u5904\u7406\u3002";
+const LOOP_GUARD_FALLBACK_MESSAGE = "\n\n\u68c0\u6d4b\u5230\u672c\u8f6e\u6267\u884c\u5df2\u7ecf\u8fdb\u5165\u91cd\u590d\u5faa\u73af\uff0c\u6211\u5148\u5728\u8fd9\u91cc\u7ed3\u675f\u3002\u524d\u9762\u5df2\u53d6\u5230\u7684\u5de5\u5177\u7ed3\u679c\u4ecd\u4f1a\u4fdd\u7559\uff0c\u4f60\u53ef\u4ee5\u53d1\u9001\u201c\u7ee7\u7eed\u201d\u8ba9\u6211\u57fa\u4e8e\u73b0\u6709\u7ed3\u679c\u63a5\u7740\u5904\u7406\u3002";
 const EMPTY_RESPONSE_FALLBACK_MESSAGE = "\u6211\u6ca1\u6709\u751f\u6210\u6709\u6548\u56de\u590d\u3002\u8bf7\u518d\u53d1\u4e00\u6b21\uff0c\u6216\u68c0\u67e5\u6a21\u578b\u914d\u7f6e\u540e\u91cd\u8bd5\u3002";
+const EMERGENCY_TOOL_LOOP_LIMIT = 48;
+const USER_INTERRUPTED_FALLBACK_MESSAGE = "\u5df2\u505c\u6b62\u5f53\u524d\u8fd0\u884c\u3002";
+
+function buildDoneEvent(
+  requestId: string,
+  event: Extract<StreamEvent, { type: "done" }>
+): Extract<StreamEvent, { type: "done" }> {
+  pushEvent(requestId, event);
+  return event;
+}
+
+function interruptedContent(content: string) {
+  return content.trim() ? content : USER_INTERRUPTED_FALLBACK_MESSAGE;
+}
 
 function formatCapabilitySummary(summary: Awaited<ReturnType<typeof getEnabledModelCapabilitySummary>>) {
   const lines = Object.entries(summary)
@@ -94,11 +109,27 @@ type BufferedToolCall = {
   index?: number;
 };
 
-const DSML_TAG = String.raw`(?:锝滐綔DSML锝滐綔|\|\|DSML\|\|)`;
+const DSML_TAG = String.raw`(?:\|\|DSML\|\||｜｜DSML｜｜|锝滐綔DSML锝滐綔)`;
 const DSML_TOOL_BLOCK_RE = new RegExp(String.raw`<\s*${DSML_TAG}tool_calls\s*>([\s\S]*?)<\/\s*${DSML_TAG}tool_calls\s*>`, "g");
 const DSML_TOOL_START_RE = new RegExp(String.raw`<\s*${DSML_TAG}tool_calls\s*>`);
 const DSML_INVOKE_RE = new RegExp(String.raw`<\s*${DSML_TAG}invoke\s+name="([^"]+)"\s*>([\s\S]*?)<\/\s*${DSML_TAG}invoke\s*>`, "g");
 const DSML_PARAMETER_RE = new RegExp(String.raw`<\s*${DSML_TAG}parameter\s+name="([^"]+)"(?:\s+string="([^"]+)")?\s*>([\s\S]*?)<\/\s*${DSML_TAG}parameter\s*>`, "g");
+const DSML_ANY_TAG_RE = new RegExp(String.raw`<\/?\s*${DSML_TAG}(?:tool_calls|invoke|parameter)\b[^>]*>`, "g");
+
+function stripDsmlArtifacts(content: string) {
+  let visibleText = content;
+  DSML_TOOL_BLOCK_RE.lastIndex = 0;
+  visibleText = visibleText.replace(DSML_TOOL_BLOCK_RE, "");
+
+  const danglingStart = visibleText.search(DSML_TOOL_START_RE);
+  if (danglingStart >= 0) {
+    visibleText = visibleText.slice(0, danglingStart);
+  }
+
+  DSML_ANY_TAG_RE.lastIndex = 0;
+  visibleText = visibleText.replace(DSML_ANY_TAG_RE, "");
+  return visibleText;
+}
 
 function coerceDsmlParameter(value: string, stringAttr?: string) {
   const decoded = decodeHtml(value).trim();
@@ -144,11 +175,7 @@ function parseDsmlToolCalls(content: string): { visibleText: string; calls: Buff
   }
 
   visibleText += content.slice(cursor);
-  const danglingStart = visibleText.search(DSML_TOOL_START_RE);
-  if (danglingStart >= 0) {
-    visibleText = visibleText.slice(0, danglingStart);
-  }
-  return { visibleText, calls };
+  return { visibleText: stripDsmlArtifacts(visibleText), calls };
 }
 
 function normalizePositiveInteger(value: number | undefined, fallback: number, min = 1) {
@@ -297,7 +324,7 @@ export async function streamFromLLM(
   requestId: string,
   storedApiKey: string,
   attachments: ChatAttachment[] = []
-): Promise<Extract<StreamEvent, { type: "done" }> | null> {
+): Promise<Extract<StreamEvent, { type: "done" }>> {
   const messages = session.messages;
   const webSettings = getWebSettings();
   const fallbackApiKey = settings.apiKey || storedApiKey || webSettings.apiKey || "";
@@ -310,11 +337,21 @@ export async function streamFromLLM(
   const effectiveApiKey = primaryConfig.apiKey || fallbackApiKey;
 
   if (!primaryConfig.model.trim()) {
-    throw new Error(MISSING_PRIMARY_MODEL_MESSAGE);
+    return buildDoneEvent(requestId, {
+      type: "done",
+      content: MISSING_PRIMARY_MODEL_MESSAGE,
+      status: "failed",
+      stopReason: "precondition_failed",
+    });
   }
 
   if (!effectiveApiKey) {
-    throw new Error(primaryConfig.name === "default" ? MISSING_PRIMARY_MODEL_MESSAGE : MISSING_API_KEY_MESSAGE);
+    return buildDoneEvent(requestId, {
+      type: "done",
+      content: primaryConfig.name === "default" ? MISSING_PRIMARY_MODEL_MESSAGE : MISSING_API_KEY_MESSAGE,
+      status: "failed",
+      stopReason: "precondition_failed",
+    });
   }
 
   const apiBase = primaryConfig.apiBase;
@@ -358,7 +395,8 @@ export async function streamFromLLM(
   const systemPrompt = [
     "You are Nexo Agent, a helpful AI assistant.",
     "Answer in the user's language. Be concise and action-oriented.",
-    `Planning mode: ${settings.planningMode}. Max steps: ${settings.maxSteps}.`,
+    `Planning mode: ${settings.planningMode}.`,
+    "If a tool loop starts repeating the same visible response without producing fresh progress, stop calling tools and give the best final answer from the current results.",
     `Workspace root for file tools: ${getWorkspaceRoot(settings)}.`,
     `Allowed file roots: ${getAllowedFileRoots(settings).join("; ")}.`,
     "Tool budget matters: never call file_read or file_write unless you have verified the path is inside allowed roots.",
@@ -448,6 +486,8 @@ export async function streamFromLLM(
       const doneEvent: Extract<StreamEvent, { type: "done" }> = {
         type: "done",
         content: result.content,
+        status: "completed",
+        stopReason: "completed",
         usage: {
           promptTokens: result.usage?.prompt_tokens,
           completionTokens: result.usage?.completion_tokens,
@@ -460,11 +500,14 @@ export async function streamFromLLM(
           source: resolvedBudget.contextWindowSource,
         },
       };
-      pushEvent(requestId, doneEvent);
-      return doneEvent;
+      return buildDoneEvent(requestId, doneEvent);
     } catch (error) {
-      pushEvent(requestId, { type: "error", message: toErrorMessage(error) });
-      return null;
+      return buildDoneEvent(requestId, {
+        type: "done",
+        content: toErrorMessage(error),
+        status: "failed",
+        stopReason: "runtime_error",
+      });
     }
   }
 
@@ -488,14 +531,20 @@ export async function streamFromLLM(
   let fullContent = "";
   let promptTokens: number | undefined;
   let completionTokens: number | undefined;
-  const maxSteps = settings.maxSteps ?? 20;
-  let reachedToolStepLimit = false;
+  const maxSteps = EMERGENCY_TOOL_LOOP_LIMIT;
+  let reachedEmergencyLoopLimit = false;
+  let interruptedByUser = false;
   let fileToolsBlocked = false;
   let breakerInfo: ReturnType<typeof circuitBreakerInfoFromDecision> | undefined;
   const circuitBreaker = settings.circuitBreakerEnabled ? createAgentLoopCircuitBreaker(settings) : null;
 
   try {
     for (let step = 0; step < maxSteps; step++) {
+      if (isRunInterrupted(requestId)) {
+        interruptedByUser = true;
+        break;
+      }
+
       let turnContent = "";
       let rawTurnContent = "";
       const toolCallBuffer: BufferedToolCall[] = [];
@@ -503,6 +552,11 @@ export async function streamFromLLM(
 
       const stream = await llmRunner.stream(lcMessages);
       for await (const chunk of stream) {
+        if (isRunInterrupted(requestId)) {
+          interruptedByUser = true;
+          await (stream as AsyncIterator<unknown> & { return?: () => Promise<IteratorResult<unknown>> }).return?.();
+          break;
+        }
         const c = chunk as AIMessageChunk;
         const token = typeof c.content === "string" ? c.content : "";
         if (token) {
@@ -537,6 +591,8 @@ export async function streamFromLLM(
         }
       }
 
+      if (interruptedByUser) break;
+
       const parsedDsml = parseDsmlToolCalls(rawTurnContent);
       turnContent = parsedDsml.visibleText;
       if (turnContent) {
@@ -566,6 +622,10 @@ export async function streamFromLLM(
       lcMessages.push(aiMsg);
 
       for (const tc of toolCallBuffer) {
+        if (isRunInterrupted(requestId)) {
+          interruptedByUser = true;
+          break;
+        }
         const parsedArgs = parseToolArgs(tc.args);
         pushEvent(requestId, { type: "tool_call", id: tc.id, name: tc.name, input: parsedArgs });
 
@@ -624,6 +684,8 @@ export async function streamFromLLM(
         }
       }
 
+      if (interruptedByUser) break;
+
       if (terminalSummary) {
         const finalToken = `\n\n${terminalSummary}`;
         fullContent += finalToken;
@@ -634,27 +696,32 @@ export async function streamFromLLM(
       const decision = circuitBreaker?.evaluate();
       if (decision?.action === "stop") {
         breakerInfo = circuitBreakerInfoFromDecision(decision);
-        reachedToolStepLimit = false;
+        reachedEmergencyLoopLimit = false;
         break;
       }
 
       if (step === maxSteps - 1) {
-        reachedToolStepLimit = true;
+        reachedEmergencyLoopLimit = true;
       }
     }
 
-    if (reachedToolStepLimit || breakerInfo) {
+    if (!interruptedByUser && (reachedEmergencyLoopLimit || breakerInfo)) {
       const finalStream = await llm.stream([
         ...lcMessages,
         new SystemMessage(
           breakerInfo
             ? `The run was stopped by the circuit breaker (${breakerInfo.reason}: ${breakerInfo.detail}). Do not call tools. Based on the available tool results, give the user a concise final response in their language. If work is incomplete, say exactly what remains.`
-            : "The tool step limit has been reached. Do not call tools. Based on the available tool results, give the user a concise final response in their language. If work is incomplete, say exactly what remains."
+            : "The run hit the internal emergency loop guard. Do not call tools. Based on the available tool results, give the user a concise final response in their language. If work is incomplete, say exactly what remains."
         ),
       ]);
       let finalContent = "";
       let rawFinalContent = "";
       for await (const chunk of finalStream) {
+        if (isRunInterrupted(requestId)) {
+          interruptedByUser = true;
+          await (finalStream as AsyncIterator<unknown> & { return?: () => Promise<IteratorResult<unknown>> }).return?.();
+          break;
+        }
         const c = chunk as AIMessageChunk;
         const token = typeof c.content === "string" ? c.content : "";
         if (token) {
@@ -665,30 +732,45 @@ export async function streamFromLLM(
           completionTokens = c.usage_metadata.output_tokens;
         }
       }
-      finalContent = parseDsmlToolCalls(rawFinalContent).visibleText;
-      if (finalContent) {
-        fullContent += finalContent;
-        pushEvent(requestId, { type: "token", content: finalContent });
-      }
-      if (!finalContent.trim()) {
-        fullContent += MAX_STEPS_FALLBACK_MESSAGE;
-        pushEvent(requestId, { type: "token", content: MAX_STEPS_FALLBACK_MESSAGE });
+      if (!interruptedByUser) {
+        finalContent = parseDsmlToolCalls(rawFinalContent).visibleText;
+        if (finalContent) {
+          fullContent += finalContent;
+          pushEvent(requestId, { type: "token", content: finalContent });
+        }
+        if (!finalContent.trim()) {
+          fullContent += LOOP_GUARD_FALLBACK_MESSAGE;
+          pushEvent(requestId, { type: "token", content: LOOP_GUARD_FALLBACK_MESSAGE });
+        }
       }
     }
   } catch (error) {
-    pushEvent(requestId, { type: "error", message: toErrorMessage(error) });
-    return null;
+    return buildDoneEvent(requestId, {
+      type: "done",
+      content: interruptedByUser || isRunInterrupted(requestId) ? interruptedContent(fullContent) : toErrorMessage(error),
+      status: interruptedByUser || isRunInterrupted(requestId) ? "interrupted" : "failed",
+      stopReason: interruptedByUser || isRunInterrupted(requestId) ? "user_interrupt" : "runtime_error",
+    });
   }
 
   const doneEvent: Extract<StreamEvent, { type: "done" }> = {
     type: "done",
-    content: fullContent || EMPTY_RESPONSE_FALLBACK_MESSAGE,
+    content: interruptedByUser
+      ? interruptedContent(fullContent)
+      : fullContent || EMPTY_RESPONSE_FALLBACK_MESSAGE,
+    status: interruptedByUser
+      ? "interrupted"
+      : (breakerInfo || reachedEmergencyLoopLimit)
+        ? "needs_input"
+        : "completed",
     usage: { promptTokens, completionTokens },
-    ...(breakerInfo
-      ? { stopReason: "circuit_breaker" as const, circuitBreaker: breakerInfo }
-      : reachedToolStepLimit
-        ? { stopReason: "max_steps" as const }
-        : {}),
+    ...(interruptedByUser
+      ? { stopReason: "user_interrupt" as const }
+      : breakerInfo
+        ? { stopReason: "circuit_breaker" as const, circuitBreaker: breakerInfo }
+        : reachedEmergencyLoopLimit
+          ? { stopReason: "loop_guard" as const }
+          : { stopReason: "completed" as const }),
     contextBudget: {
       contextWindowTokens: budgetConfig.contextWindowTokens,
       maxInputTokens: budgetConfig.maxInputTokens,
@@ -697,8 +779,7 @@ export async function streamFromLLM(
       source: resolvedBudget.contextWindowSource,
     },
   };
-  pushEvent(requestId, doneEvent);
-  return doneEvent;
+  return buildDoneEvent(requestId, doneEvent);
 }
 
 export async function extractMemoryAfterChat(

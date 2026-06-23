@@ -53,6 +53,7 @@ export interface ModelContextBudget {
 }
 
 export type CircuitBreakerReason =
+  | "repeated_visible_output"
   | "repeated_tool_calls"
   | "consecutive_failures"
   | "no_progress"
@@ -106,6 +107,8 @@ export interface RuntimeInfo {
 }
 
 export type ChatRole = "system" | "user" | "assistant";
+export type ChatMessageStatus = "sending" | "completed" | "interrupted" | "needs_input" | "failed";
+export type TurnCompletionStatus = Exclude<ChatMessageStatus, "sending">;
 
 export interface Attachment {
   url: string;
@@ -121,7 +124,7 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   createdAt: string;
-  status?: "sending" | "done" | "error";
+  status?: ChatMessageStatus;
   attachments?: Attachment[];
 }
 

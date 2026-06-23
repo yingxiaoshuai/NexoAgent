@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect } from "react";
-import { Input, Button, Tag, Tooltip } from "antd";
-import { SendOutlined, PaperClipOutlined, CloseOutlined, FileOutlined, StopOutlined } from "@ant-design/icons";
+import React, { useEffect, useRef, useState } from "react";
+import { Button, Input, Tag, Tooltip } from "antd";
+import { CloseOutlined, FileOutlined, PaperClipOutlined, SendOutlined, StopOutlined } from "@ant-design/icons";
 import { getApiBase } from "../../services/api";
 import { useTheme } from "../../theme";
 import { useI18n } from "../../i18n";
@@ -8,15 +8,26 @@ import type { Attachment } from "../../shared/types";
 
 interface Props {
   onSend: (content: string, attachments: Attachment[]) => void;
+  attachments: Attachment[];
+  onAttachmentsChange: (attachments: Attachment[]) => void;
+  onUploadFiles: (files: File[]) => Promise<void>;
   disabled?: boolean;
   onCancel?: () => void;
   fillValue?: { text: string; ts: number } | null;
   onValueChange?: (v: string) => void;
 }
 
-export const InputBar: React.FC<Props> = ({ onSend, disabled, onCancel, fillValue, onValueChange }) => {
+export const InputBar: React.FC<Props> = ({
+  onSend,
+  attachments,
+  onAttachmentsChange,
+  onUploadFiles,
+  disabled,
+  onCancel,
+  fillValue,
+  onValueChange,
+}) => {
   const [value, setValue] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { colors } = useTheme();
@@ -34,46 +45,49 @@ export const InputBar: React.FC<Props> = ({ onSend, disabled, onCancel, fillValu
     }
   }, [fillValue]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleChange = (v: string) => {
-    setValue(v);
-    onValueChange?.(v);
+  const handleChange = (nextValue: string) => {
+    setValue(nextValue);
+    onValueChange?.(nextValue);
   };
 
   const submit = () => {
     if (disabled || (!value.trim() && attachments.length === 0)) return;
     onSend(value, attachments);
     setValue("");
-    setAttachments([]);
+    onAttachmentsChange([]);
     onValueChange?.("");
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const form = new FormData();
-    form.append("file", file);
-    const res = await fetch(getApiBase() + "/api/upload", { method: "POST", body: form });
-    if (res.ok) {
-      const data = await res.json();
-      const type = file.type.startsWith("image/")
-        ? "image"
-        : file.type.startsWith("audio/")
-          ? "audio"
-          : "file";
-      setAttachments((prev) => [
-        ...prev,
-        {
-          url: data.url,
-          name: data.name || file.name,
-          type: data.type || type,
-          mimeType: data.mimeType || file.type,
-          size: data.size || file.size,
-          source: "upload",
-        },
-      ]);
-    }
-    e.target.value = "";
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    if (files.length === 0) return;
+    await onUploadFiles(files);
+    event.target.value = "";
   };
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardFiles = Array.from(event.clipboardData.files ?? []);
+    const itemFiles = event.clipboardData.items
+      ? Array.from(event.clipboardData.items)
+        .filter((item) => item.kind === "file")
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => Boolean(file))
+      : [];
+    const files = [...clipboardFiles, ...itemFiles].filter((file, index, all) =>
+      all.findIndex((candidate) =>
+        candidate.name === file.name
+        && candidate.size === file.size
+        && candidate.type === file.type) === index,
+    );
+
+    if (files.length > 0) {
+      void onUploadFiles(files);
+    }
+  };
+
+  const resolveAttachmentPreviewUrl = (attachment: Attachment) => (
+    /^https?:\/\//i.test(attachment.url) ? attachment.url : `${getApiBase()}${attachment.url}`
+  );
 
   const controlStyle: React.CSSProperties = {
     borderRadius: 12,
@@ -86,27 +100,45 @@ export const InputBar: React.FC<Props> = ({ onSend, disabled, onCancel, fillValu
     <div style={{ padding: "12px 24px 20px", borderTop: `1px solid ${colors.border}`, background: colors.bgSecondary }}>
       {attachments.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
-          {attachments.map((att, i) => (
+          {attachments.map((attachment, index) => (
             <Tag
-              key={i}
+              key={`${attachment.url}-${index}`}
               style={{
-                display: "flex", alignItems: "center", gap: 4, padding: "2px 6px",
-                background: colors.bgTertiary, border: `1px solid ${colors.borderStrong}`, color: colors.textPrimary,
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "2px 6px",
+                background: colors.bgTertiary,
+                border: `1px solid ${colors.borderStrong}`,
+                color: colors.textPrimary,
               }}
               closeIcon={<CloseOutlined style={{ color: colors.textMuted }} />}
               closable
-              onClose={() => setAttachments((prev) => prev.filter((_, idx) => idx !== i))}
+              onClose={() => onAttachmentsChange(attachments.filter((_, currentIndex) => currentIndex !== index))}
             >
-              {att.type === "image"
-                ? <img src={getApiBase() + att.url} alt={att.name} style={{ width: 24, height: 24, objectFit: "cover", borderRadius: 2 }} />
+              {attachment.type === "image"
+                ? (
+                  <img
+                    src={resolveAttachmentPreviewUrl(attachment)}
+                    alt={attachment.name}
+                    style={{ width: 24, height: 24, objectFit: "cover", borderRadius: 2 }}
+                  />
+                )
                 : <FileOutlined />}
-              <span>{att.name}</span>
+              <span>{attachment.name}</span>
             </Tag>
           ))}
         </div>
       )}
+
       <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-        <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleFileChange} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          style={{ display: "none" }}
+          onChange={handleFileChange}
+        />
         <Tooltip title={t("attachFile")}>
           <Button
             icon={<PaperClipOutlined />}
@@ -118,10 +150,14 @@ export const InputBar: React.FC<Props> = ({ onSend, disabled, onCancel, fillValu
         <Input.TextArea
           ref={ref}
           value={value}
-          onChange={(e) => handleChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+          onChange={(event) => handleChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              submit();
+            }
           }}
+          onPaste={handlePaste}
           placeholder={t("typeMessage")}
           autoSize={{ minRows: 1, maxRows: 6 }}
           disabled={disabled && !onCancel}

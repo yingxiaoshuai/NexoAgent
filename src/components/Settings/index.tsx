@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { Alert, Button, Checkbox, Divider, Form, Input, InputNumber, List, Modal, Select, Space, Switch, Tag, Typography, message } from "antd";
-import { DeleteOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
+import { PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useChatStore } from "../../store/chat";
 import type { AgentSettings, DiscoveredModel, ModelCapability, ModelProfile, ProviderId } from "../../shared/types";
 import { useTheme } from "../../theme";
 import { apiDelete, apiGet, apiPost } from "../../services/api";
 import { sanitizeApiKeyForSave, SAVED_API_KEY_MASK } from "../../shared/settings";
+import { OverflowMenuButton } from "../Common/OverflowMenuButton";
 import {
   getDefaultServiceProviderName,
   getProviderDefaultApiBase,
@@ -265,6 +266,18 @@ export const Settings: React.FC = () => {
     void messageApi.success("模型配置已删除");
   };
 
+  const confirmDeleteProfile = (profile: ModelProfile) => {
+    Modal.confirm({
+      title: `删除模型“${profile.name}”？`,
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await deleteProfile(profile.id);
+      },
+    });
+  };
+
   const setPrimaryProfile = async (profile: ModelProfile, isPrimary: boolean) => {
     const nextCapabilities = isPrimary && !profile.capabilities?.includes("orchestration")
       ? [...(profile.capabilities ?? []), "orchestration" as ModelCapability]
@@ -371,17 +384,8 @@ export const Settings: React.FC = () => {
             <Form.Item label={label("Temperature")} name="temperature">
               <InputNumber min={0} max={2} step={0.1} style={{ width: "100%" }} />
             </Form.Item>
-            <Form.Item label={label("最大上下文轮次")} name="maxContextTurns">
-              <InputNumber min={1} max={200} style={{ width: "100%" }} />
-            </Form.Item>
             <Form.Item label={label("上下文自动压缩")} name="enableContextCompaction" valuePropName="checked">
               <Switch />
-            </Form.Item>
-            <Form.Item label={label("压缩阈值（轮）")} name="contextCompactionThreshold">
-              <InputNumber min={6} max={200} style={{ width: "100%" }} />
-            </Form.Item>
-            <Form.Item label={label("最大工具步数")} name="maxSteps">
-              <InputNumber min={1} max={100} style={{ width: "100%" }} />
             </Form.Item>
             <Form.Item label={label("默认脚本超时（秒）")} name="shellCommandTimeoutMs" getValueProps={(value) => ({ value: Math.round((value ?? 300_000) / 1000) })} normalize={(seconds) => Math.max(5, Math.min(600, Number(seconds) || 300)) * 1000}>
               <InputNumber min={5} max={600} style={{ width: "100%" }} />
@@ -412,23 +416,46 @@ export const Settings: React.FC = () => {
           <List.Item
             style={{ borderColor: colors.border }}
             actions={[
-              <Space key="primary" size={6}>
-                <Text style={{ color: colors.textSecondary }}>主控</Text>
-                <Switch checked={Boolean(profile.isPrimary)} disabled={!profile.enabled} onChange={(value) => void setPrimaryProfile(profile, value)} />
-              </Space>,
-              <Switch key="enabled" checked={profile.enabled} onChange={(value) => void toggleProfileEnabled(profile, value)} />,
-              <Button
-                key="refresh-context"
-                type="text"
-                icon={<ReloadOutlined />}
-                disabled={profile.contextWindowSource === "user" || profile.contextWindowSource === "profile"}
-                loading={refreshingContextProfileId === profile.id}
-                onClick={() => void refreshProfileContext(profile)}
-              >
-                重探测
-              </Button>,
-              <Button key="edit" type="text" icon={<EditOutlined />} onClick={() => openEditProfile(profile)} />,
-              <Button key="delete" danger type="text" icon={<DeleteOutlined />} onClick={() => void deleteProfile(profile.id)} />,
+              <OverflowMenuButton
+                key="more"
+                color={colors.textSecondary}
+                items={[
+                  {
+                    key: "primary",
+                    label: profile.isPrimary ? "取消主模型" : "设为主模型",
+                    disabled: !profile.enabled && !profile.isPrimary,
+                  },
+                  { key: "toggle", label: profile.enabled ? "停用" : "启用" },
+                  {
+                    key: "refresh-context",
+                    label: refreshingContextProfileId === profile.id ? "重探测中..." : "重探测",
+                    disabled: refreshingContextProfileId === profile.id || profile.contextWindowSource === "user" || profile.contextWindowSource === "profile",
+                  },
+                  { key: "edit", label: "编辑" },
+                  { key: "delete", label: "删除", danger: true },
+                ]}
+                onItemClick={(key) => {
+                  if (key === "primary") {
+                    void setPrimaryProfile(profile, !profile.isPrimary);
+                    return;
+                  }
+                  if (key === "toggle") {
+                    void toggleProfileEnabled(profile, !profile.enabled);
+                    return;
+                  }
+                  if (key === "refresh-context") {
+                    void refreshProfileContext(profile);
+                    return;
+                  }
+                  if (key === "edit") {
+                    openEditProfile(profile);
+                    return;
+                  }
+                  if (key === "delete") {
+                    confirmDeleteProfile(profile);
+                  }
+                }}
+              />,
             ]}
           >
             <List.Item.Meta

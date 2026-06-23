@@ -8,14 +8,12 @@ import {
   List,
   Modal,
   Space,
-  Switch,
   Tabs,
   Tag,
   Typography,
   message,
 } from "antd";
 import {
-  DeleteOutlined,
   GlobalOutlined,
   PlusOutlined,
   ThunderboltOutlined,
@@ -23,6 +21,7 @@ import {
 import type { McpServerConfig } from "../../shared/types";
 import { apiGet, apiPost } from "../../services/api";
 import { useTheme } from "../../theme";
+import { OverflowMenuButton } from "../Common/OverflowMenuButton";
 
 const { Title, Text } = Typography;
 const { TextArea } = Input;
@@ -124,10 +123,15 @@ export default function Tools() {
                         <List.Item
                           style={{ borderColor: colors.border }}
                           actions={[
-                            <Switch
-                              key="enabled"
-                              checked={tool.enabled}
-                              onChange={(value) => void toggleTool(tool.name, value)}
+                            <OverflowMenuButton
+                              key="more"
+                              color={colors.textSecondary}
+                              items={[{ key: "toggle", label: tool.enabled ? "停用" : "启用" }]}
+                              onItemClick={(key) => {
+                                if (key === "toggle") {
+                                  void toggleTool(tool.name, !tool.enabled);
+                                }
+                              }}
                             />,
                           ]}
                         >
@@ -176,12 +180,15 @@ export default function Tools() {
                       <List.Item
                         style={{ borderColor: colors.border }}
                         actions={[
-                          <Button
-                            key="delete"
-                            danger
-                            type="text"
-                            icon={<DeleteOutlined />}
-                            onClick={() => void deleteMcpServer(server.name)}
+                          <OverflowMenuButton
+                            key="more"
+                            color={colors.textSecondary}
+                            items={[{ key: "delete", label: "删除", danger: true }]}
+                            onItemClick={(key) => {
+                              if (key === "delete") {
+                                void deleteMcpServer(server.name);
+                              }
+                            }}
                           />,
                         ]}
                       >

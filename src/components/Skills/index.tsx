@@ -5,17 +5,16 @@ import {
   Empty,
   List,
   Space,
-  Switch,
   Tag,
-  Tooltip,
   Typography,
   message,
 } from "antd";
-import { DeleteOutlined, ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
+import { ReloadOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import type { SkillDefinition } from "../../shared/types";
 import { apiDelete, apiGet, apiPost } from "../../services/api";
 import { useI18n } from "../../i18n";
 import { useTheme } from "../../theme";
+import { OverflowMenuButton } from "../Common/OverflowMenuButton";
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -98,22 +97,26 @@ export default function Skills() {
           <List.Item
             style={{ borderColor: colors.border, paddingInline: 0 }}
             actions={[
-              <Switch
-                key="enabled"
-                checked={skill.enabled}
-                onChange={(value) => void toggleSkill(skill, value)}
+              <OverflowMenuButton
+                key="more"
+                color={colors.textSecondary}
+                items={[
+                  { key: "toggle", label: skill.enabled ? t("disabled") : t("enabled") },
+                  ...(skill.source !== "built-in"
+                    ? [{ key: "delete", label: t("removeSkill"), danger: skill.managed }]
+                    : []),
+                ]}
+                onItemClick={(key) => {
+                  if (key === "toggle") {
+                    void toggleSkill(skill, !skill.enabled);
+                    return;
+                  }
+                  if (key === "delete") {
+                    void removeSkill(skill);
+                  }
+                }}
               />,
-              skill.source !== "built-in" && (
-                <Tooltip key="delete" title={t("removeSkill")}>
-                  <Button
-                    type="text"
-                    icon={<DeleteOutlined />}
-                    danger={skill.managed}
-                    onClick={() => void removeSkill(skill)}
-                  />
-                </Tooltip>
-              ),
-            ].filter(Boolean)}
+            ]}
           >
             <List.Item.Meta
               avatar={<ThunderboltOutlined style={{ color: colors.accent, fontSize: 18, marginTop: 4 }} />}

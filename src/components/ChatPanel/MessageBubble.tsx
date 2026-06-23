@@ -20,6 +20,21 @@ interface Props {
   attachments?: ChatMessage["attachments"];
 }
 
+const DSML_TAG_PATTERN = String.raw`(?:\|\|DSML\|\||｜｜DSML｜｜|锝滐綔DSML锝滐綔)`;
+const DSML_TOOL_BLOCK_RE = new RegExp(String.raw`<\s*${DSML_TAG_PATTERN}tool_calls\s*>[\s\S]*?<\/\s*${DSML_TAG_PATTERN}tool_calls\s*>`, "g");
+const DSML_TOOL_START_RE = new RegExp(String.raw`<\s*${DSML_TAG_PATTERN}tool_calls\s*>`);
+const DSML_ANY_TAG_RE = new RegExp(String.raw`<\/?\s*${DSML_TAG_PATTERN}(?:tool_calls|invoke|parameter)\b[^>]*>`, "g");
+
+function stripDsmlArtifacts(content: string) {
+  let visibleText = content;
+  visibleText = visibleText.replace(DSML_TOOL_BLOCK_RE, "");
+  const danglingStart = visibleText.search(DSML_TOOL_START_RE);
+  if (danglingStart >= 0) {
+    visibleText = visibleText.slice(0, danglingStart);
+  }
+  return visibleText.replace(DSML_ANY_TAG_RE, "");
+}
+
 function buildMarkdownComponents(colors: ThemeColors) {
   return {
     pre: ({ children }: { children?: React.ReactNode }) => (
@@ -69,13 +84,28 @@ function extractUploadArtifacts(content: string) {
     });
 }
 
+function getMessageStatusMeta(status: ChatMessage["status"]) {
+  switch (status) {
+    case "failed":
+      return { color: "error" as const, label: "执行失败" };
+    case "interrupted":
+      return { color: "warning" as const, label: "已中断" };
+    case "needs_input":
+      return { color: "processing" as const, label: "需要继续" };
+    default:
+      return null;
+  }
+}
+
 export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, blocks }) => {
   const { colors } = useTheme();
   const isUser = message.role === "user";
   const toolMap = new Map((toolCalls ?? []).map((tc) => [tc.id, tc]));
   const hasBlocks = !isUser && blocks && blocks.length > 0;
   const apiBase = getApiBase();
-  const generatedArtifacts = !isUser ? extractUploadArtifacts(message.content) : [];
+  const safeContent = !isUser ? stripDsmlArtifacts(message.content) : message.content;
+  const generatedArtifacts = !isUser ? extractUploadArtifacts(safeContent) : [];
+  const statusMeta = !isUser ? getMessageStatusMeta(message.status) : null;
 
   return (
     <div style={{
@@ -141,7 +171,7 @@ export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, 
                   return (
                     <MarkdownText
                       key={`text-${i}`}
-                      content={block.content}
+                      content={stripDsmlArtifacts(block.content)}
                       streaming={streaming && isLast && block.type === "text"}
                       colors={colors}
                     />
@@ -155,7 +185,7 @@ export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, 
               )}
             </>
           ) : (
-            <MarkdownText content={message.content} streaming={streaming} colors={colors} />
+            <MarkdownText content={safeContent} streaming={streaming} colors={colors} />
           )}
         </div>
         {generatedArtifacts.length > 0 && (
@@ -184,8 +214,8 @@ export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, 
             ))}
           </div>
         )}
-        {message.status === "error" && (
-          <Tag color="error" style={{ marginTop: 4 }}>请求失败</Tag>
+        {statusMeta && (
+          <Tag color={statusMeta.color} style={{ marginTop: 4 }}>{statusMeta.label}</Tag>
         )}
       </div>
     </div>

@@ -96,6 +96,7 @@ type DesktopApi = {
     getRuntimeInfo: () => Promise<{ webBaseUrl?: string }>;
     loadSettings: () => Promise<AgentSettings>;
     saveSettings: (s: AgentSettings) => Promise<AgentSettings>;
+    openExternal: (url: string) => Promise<void>;
   };
 };
 
@@ -206,7 +207,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       activeSessionId = get().activeSessionId!;
     }
 
-    const userMsg: ChatMessage = { id: uuid(), role: "user", content, createdAt: new Date().toISOString(), status: "done", ...{ attachments: attachments || [] } };
+    const userMsg: ChatMessage = { id: uuid(), role: "user", content, createdAt: new Date().toISOString(), status: "completed", ...{ attachments: attachments || [] } };
     const assistantId = uuid();
     const assistantMsg: ChatMessage = { id: assistantId, role: "assistant", content: "", createdAt: new Date().toISOString(), status: "sending" };
 
@@ -222,8 +223,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set((st) => ({
         streaming: false,
         messages: st.messages.map((m) =>
-          m.id === assistantId
-            ? { ...m, content: formatAssistantError(error instanceof Error ? error.message : String(error)), status: "error" }
+            m.id === assistantId
+            ? { ...m, content: formatAssistantError(error instanceof Error ? error.message : String(error)), status: "failed" }
             : m
         ),
       }));
@@ -289,11 +290,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
           },
         }));
       } else if (event.type === "done") {
+        const status = String(event.status ?? "completed") as ChatMessage["status"];
         set((st) => ({
           streaming: false,
           cancelStream: () => {},
           messages: st.messages.map((m) =>
-            m.id === assistantId ? { ...m, content: full || (event.content as string), status: "done" } : m
+            m.id === assistantId ? { ...m, content: full || (event.content as string), status } : m
           ),
         }));
         void get().loadSessions();
@@ -303,13 +305,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
           streaming: false,
           cancelStream: () => {},
           messages: st.messages.map((m) =>
-            m.id === assistantId ? { ...m, content: formatAssistantError(String(event.message ?? "")), status: "error" } : m
+            m.id === assistantId ? { ...m, content: formatAssistantError(String(event.message ?? "")), status: "failed" } : m
           ),
         }));
         cancel();
       }
     });
-    set({ cancelStream: () => { cancel(); set((st) => ({ streaming: false, cancelStream: () => {}, messages: st.messages.map((m) => m.id === assistantId && m.status === "sending" ? { ...m, status: "done" } : m) })); } });
+    set({
+      cancelStream: () => {
+        void apiPost<{ ok: boolean }>(`/api/chat/${requestId}/interrupt`, {}).catch(() => undefined);
+        cancel();
+        set((st) => ({
+          streaming: false,
+          cancelStream: () => {},
+          messages: st.messages.map((m) => (
+            m.id === assistantId && m.status === "sending"
+              ? { ...m, content: m.content || "已停止当前运行。", status: "interrupted" }
+              : m
+          )),
+        }));
+      },
+    });
   },
 
   loadSettings: async () => {

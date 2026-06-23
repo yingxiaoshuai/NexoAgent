@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { Tree, Button, Input, message } from "antd";
-import { BookOutlined, FileOutlined, DeleteOutlined, EditOutlined } from "@ant-design/icons";
+import { Tree, Button, Input, Modal, message } from "antd";
+import { BookOutlined, FileOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { apiGet, apiPost, apiDelete } from "../../services/api";
 import { useTheme } from "../../theme";
+import { OverflowMenuButton } from "../Common/OverflowMenuButton";
 
 interface TreeNode {
   key: string;
@@ -62,6 +63,18 @@ export default function Knowledge() {
     }
   };
 
+  const confirmDeleteFile = (path: string) => {
+    Modal.confirm({
+      title: `删除文件“${path}”？`,
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await deleteFile(path);
+      },
+    });
+  };
+
   const saveFile = async () => {
     const path = creating ? newFileName : selectedPath;
     if (!path) {
@@ -86,11 +99,13 @@ export default function Knowledge() {
     <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", color: colors.textPrimary }}>
       <span>{node.title}</span>
       {node.isLeaf && (
-        <DeleteOutlined
-          style={{ color: colors.textSecondary, marginLeft: 8 }}
-          onClick={(event) => {
-            event.stopPropagation();
-            void deleteFile(node.key);
+        <OverflowMenuButton
+          color={colors.textSecondary}
+          items={[{ key: "delete", label: "删除", danger: true }]}
+          onItemClick={(key) => {
+            if (key === "delete") {
+              confirmDeleteFile(node.key);
+            }
           }}
         />
       )}
@@ -195,20 +210,23 @@ export default function Knowledge() {
           <div style={{ padding: 24, flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
               <span style={{ fontWeight: 600, color: colors.textPrimary }}>{selectedPath}</span>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Button
-                  icon={<EditOutlined />}
-                  onClick={() => {
+              <OverflowMenuButton
+                color={colors.textSecondary}
+                items={[
+                  { key: "edit", label: "编辑" },
+                  { key: "delete", label: "删除", danger: true },
+                ]}
+                onItemClick={(key) => {
+                  if (key === "edit") {
                     setEditContent(content);
                     setEditing(true);
-                  }}
-                >
-                  编辑
-                </Button>
-                <Button icon={<DeleteOutlined />} danger onClick={() => void deleteFile(selectedPath!)}>
-                  删除
-                </Button>
-              </div>
+                    return;
+                  }
+                  if (key === "delete" && selectedPath) {
+                    confirmDeleteFile(selectedPath);
+                  }
+                }}
+              />
             </div>
             <div style={{ flex: 1, overflow: "auto", color: colors.textPrimary }}>
               <ReactMarkdown rehypePlugins={[rehypeHighlight]}>{content}</ReactMarkdown>

@@ -6,6 +6,7 @@ const desktopApi = {
   loadSettings: (): Promise<AgentSettings> => ipcRenderer.invoke("settings:load"),
   saveSettings: (settings: AgentSettings): Promise<AgentSettings> =>
     ipcRenderer.invoke("settings:save", settings),
+  openExternal: (url: string): Promise<void> => ipcRenderer.invoke("shell:openExternal", url),
 };
 
 contextBridge.exposeInMainWorld("nexoDesktop", desktopApi);

@@ -39,6 +39,8 @@ interface CircuitBreakerState {
   accumulatedTokens: number;
   lastFingerprint: string;
   repeatedFingerprintCount: number;
+  lastVisibleOutputSignature: string;
+  repeatedVisibleOutputCount: number;
   lastUsefulOutputSignature: string;
 }
 
@@ -48,8 +50,12 @@ const DEFAULT_STATE: CircuitBreakerState = {
   accumulatedTokens: 0,
   lastFingerprint: "",
   repeatedFingerprintCount: 0,
+  lastVisibleOutputSignature: "",
+  repeatedVisibleOutputCount: 0,
   lastUsefulOutputSignature: "",
 };
+
+const REPEATED_VISIBLE_OUTPUT_LIMIT = 4;
 
 function stableSerialize(value: unknown): string {
   if (value === null || value === undefined) return String(value);
@@ -97,6 +103,12 @@ function usefulOutputSignature(output: string) {
   return normalized.slice(0, 400);
 }
 
+function visibleOutputSignature(output: string) {
+  const normalized = normalizeText(output);
+  if (!normalized) return "";
+  return normalized.slice(0, 400);
+}
+
 export function circuitBreakerInfoFromDecision(decision: Extract<CircuitBreakerDecision, { action: "stop" }>): CircuitBreakerInfo {
   return {
     reason: decision.reason,
@@ -134,6 +146,17 @@ export class AgentLoopCircuitBreaker {
       this.state.repeatedFingerprintCount = 0;
     }
 
+    const visibleSignature = turn.toolCalls.length > 0 ? visibleOutputSignature(turn.visibleText) : "";
+    if (visibleSignature && visibleSignature === this.state.lastVisibleOutputSignature) {
+      this.state.repeatedVisibleOutputCount += 1;
+    } else if (visibleSignature) {
+      this.state.lastVisibleOutputSignature = visibleSignature;
+      this.state.repeatedVisibleOutputCount = 1;
+    } else {
+      this.state.lastVisibleOutputSignature = "";
+      this.state.repeatedVisibleOutputCount = 0;
+    }
+
     const madeVisibleProgress = normalizeText(turn.visibleText).length > 0;
     if (madeVisibleProgress) {
       this.state.noProgressCount = 0;
@@ -152,6 +175,7 @@ export class AgentLoopCircuitBreaker {
 
     if (outputSignature && outputSignature !== this.state.lastUsefulOutputSignature) {
       this.state.lastUsefulOutputSignature = outputSignature;
+      this.state.repeatedVisibleOutputCount = 0;
       this.state.noProgressCount = 0;
     } else if (!outputSignature) {
       this.state.noProgressCount += 1;
@@ -166,6 +190,15 @@ export class AgentLoopCircuitBreaker {
         action: "stop",
         reason: "consecutive_failures",
         detail: `Tool execution failed or was blocked ${this.state.consecutiveFailureCount} times in a row.`,
+        step,
+      };
+    }
+
+    if (this.state.repeatedVisibleOutputCount >= REPEATED_VISIBLE_OUTPUT_LIMIT && this.state.lastVisibleOutputSignature) {
+      return {
+        action: "stop",
+        reason: "repeated_visible_output",
+        detail: `The model produced the same visible output ${this.state.repeatedVisibleOutputCount} times in a row while still trying to continue.`,
         step,
       };
     }

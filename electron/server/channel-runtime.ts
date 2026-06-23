@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ChatMessage } from "../../src/shared/types";
 import { streamFromLLM } from "./agent";
+import { clearRun, registerRun } from "./run-control";
 import { createSseQueue, scheduleSseCleanup } from "./sse";
 import { buildRuntimeSettings } from "./settings";
 import { ensureSessionsLoaded, getSessionsMap, saveSessionsToDisk } from "./sessions";
@@ -145,7 +146,7 @@ export async function runChannelMessage(message: IncomingChannelMessage, getStor
     role: "user",
     content: message.text,
     createdAt: now,
-    status: "done",
+    status: "completed",
   };
 
   const session: Session = {
@@ -157,20 +158,22 @@ export async function runChannelMessage(message: IncomingChannelMessage, getStor
   };
 
   getSessionsMap().set(sessionId, session);
+  registerRun(requestId);
   createSseQueue(requestId);
 
   const doneEvent = await streamFromLLM(buildRuntimeSettings(), session, requestId, getStoredApiKey());
-  const reply = doneEvent?.content?.trim() || "已收到。";
+  const reply = doneEvent.content.trim() || "已收到。";
   session.messages.push({
     id: randomUUID(),
     role: "assistant",
     content: reply,
     createdAt: new Date().toISOString(),
-    status: "done",
+    status: doneEvent.status,
   });
   session.updatedAt = new Date().toISOString();
 
   await saveSessionsToDisk();
+  clearRun(requestId);
   scheduleSseCleanup(requestId);
   return { sessionId, reply };
 }
