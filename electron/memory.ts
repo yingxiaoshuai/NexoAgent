@@ -4,10 +4,18 @@ import fs from "node:fs/promises";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
-import { OpenAIEmbeddings } from "@langchain/openai";
 import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage } from "@langchain/core/messages";
 import { ChromaClient, type Collection, type Metadata, type Where } from "chromadb";
+import { getDefaultServiceProviderName, normalizeProviderId } from "../src/shared/providers";
+import type { AgentSettings } from "../src/shared/types";
+import { resolveCapabilityModelConfig } from "./server/model-runtime";
+import {
+  formatGeminiRetrievalText,
+  getProviderEmbeddingRuntimeConfig,
+  type EmbeddingPurpose,
+  type ProviderEmbeddingTransport,
+} from "./server/provider-embeddings";
 import {
   CHROMA_DIR,
   DATA_DIR,
@@ -15,12 +23,12 @@ import {
   MEMORY_JSON_FILE,
   MEMORY_MD_FILE,
 } from "./server/config";
-const MEMORY_SCHEMA_VERSION = 2;
+const MEMORY_SCHEMA_VERSION = 3;
 const CHROMA_COLLECTION = "nexo_memories";
 const DREAM_DEBOUNCE_MS = 1200;
 const EMBEDDING_TIMEOUT_MS = 8000;
 
-export type MemoryKind = "daily" | "dream" | "long_term" | "script";
+export type MemoryKind = "daily" | "dream" | "script";
 
 export interface MemoryEntry {
   id: string;
@@ -81,6 +89,27 @@ let chromaUnavailable = false;
 const pendingChromaUpserts = new Set<string>();
 const dreamTimers = new Map<string, NodeJS.Timeout>();
 const chromaChildren = new Set<ChildProcess>();
+const MEMORY_TABLE_COLUMNS = ["id", "kind", "day_key", "content", "session_id", "key", "scope", "metadata", "created_at", "updated_at"];
+
+interface MemoryEmbeddingSettings extends Partial<Pick<AgentSettings, "providerId" | "providerName" | "apiBase" | "apiKey" | "model" | "temperature">> {}
+
+interface ResolvedEmbeddingConfig {
+  providerName: string;
+  apiKey: string;
+  apiBase: string;
+  model: string;
+  transport: ProviderEmbeddingTransport;
+}
+
+interface OpenAIEmbeddingResponse {
+  data?: Array<{ embedding?: number[] }>;
+  error?: { message?: string };
+}
+
+interface GeminiEmbeddingResponse {
+  embeddings?: Array<{ values?: number[] }>;
+  error?: { message?: string };
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -109,7 +138,7 @@ export function normalizeDayKey(value?: string | Date | null): string {
 }
 
 export function isMemoryKind(value: unknown): value is MemoryKind {
-  return value === "daily" || value === "dream" || value === "long_term" || value === "script";
+  return value === "daily" || value === "dream" || value === "script";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -172,14 +201,19 @@ function readUserVersion(database: Database) {
   return Number(value ?? 0);
 }
 
-function needsSchemaRebuild(database: Database) {
-  if (readUserVersion(database) !== MEMORY_SCHEMA_VERSION) return true;
-  if (!tableExists(database, "memories")) return true;
-  if (tableExists(database, "memory_embeddings")) return true;
+function hasExpectedMemoryShape(database: Database) {
+  if (!tableExists(database, "memories")) return false;
   const columns = getTableColumns(database, "memories");
-  return !["id", "kind", "day_key", "content", "session_id", "key", "scope", "metadata", "created_at", "updated_at"].every((column) =>
-    columns.includes(column)
-  );
+  return MEMORY_TABLE_COLUMNS.every((column) => columns.includes(column));
+}
+
+function getSchemaAction(database: Database): "ready" | "migrate_v3" | "rebuild" {
+  if (!hasExpectedMemoryShape(database)) return "rebuild";
+  if (tableExists(database, "memory_embeddings")) return "rebuild";
+  const version = readUserVersion(database);
+  if (version === MEMORY_SCHEMA_VERSION) return "ready";
+  if (version === 2) return "migrate_v3";
+  return "rebuild";
 }
 
 async function resetChromaData() {
@@ -193,11 +227,17 @@ async function removeLegacyMemoryFiles() {
   await fs.rm(MEMORY_JSON_FILE, { force: true });
 }
 
+function queueAllMemoriesForChromaBackfill() {
+  for (const entry of allRows()) {
+    pendingChromaUpserts.add(entry.id);
+  }
+}
+
 function createSchema(database: Database) {
   database.run(`
     CREATE TABLE IF NOT EXISTS memories (
       id TEXT PRIMARY KEY,
-      kind TEXT NOT NULL CHECK (kind IN ('daily', 'dream', 'long_term', 'script')),
+      kind TEXT NOT NULL CHECK (kind IN ('daily', 'dream', 'script')),
       day_key TEXT NOT NULL CHECK (length(day_key) = 8),
       content TEXT NOT NULL,
       session_id TEXT NOT NULL DEFAULT '',
@@ -219,8 +259,28 @@ function createSchema(database: Database) {
   `);
 }
 
+async function migrateSchemaToV3(database: Database) {
+  database.exec(`
+    ALTER TABLE memories RENAME TO memories_legacy;
+  `);
+  createSchema(database);
+  database.exec(`
+    INSERT INTO memories (id, kind, day_key, content, session_id, key, scope, metadata, created_at, updated_at)
+    SELECT id, kind, day_key, content, session_id, key, scope, metadata, created_at, updated_at
+    FROM memories_legacy
+    WHERE kind IN ('daily', 'dream', 'script');
+    DROP TABLE memories_legacy;
+  `);
+  await saveDb();
+  await resetChromaData();
+  queueAllMemoriesForChromaBackfill();
+}
+
 async function ensureSchema(database: Database) {
-  if (needsSchemaRebuild(database)) {
+  const action = getSchemaAction(database);
+  if (action === "migrate_v3") {
+    await migrateSchemaToV3(database);
+  } else if (action === "rebuild") {
     database.exec(`
       DROP TABLE IF EXISTS memory_embeddings;
       DROP TABLE IF EXISTS memories;
@@ -359,7 +419,7 @@ async function writeMemoryMarkdown() {
   for (const day of days) {
     lines.push(`## ${day}`, "");
     const entries = byDay.get(day) ?? [];
-    for (const kind of ["daily", "dream", "long_term", "script"] as MemoryKind[]) {
+    for (const kind of ["daily", "dream", "script"] as MemoryKind[]) {
       const kindEntries = entries.filter((entry) => entry.kind === kind);
       if (!kindEntries.length) continue;
       lines.push(`### ${kind}`, "");
@@ -372,30 +432,165 @@ async function writeMemoryMarkdown() {
   await fs.writeFile(MEMORY_MD_FILE, lines.join("\n"), "utf8");
 }
 
-function buildEmbeddings(apiKey: string, apiBase: string) {
-  return new OpenAIEmbeddings({
-    apiKey,
-    configuration: { baseURL: apiBase },
-    model: "text-embedding-3-small",
-    maxRetries: 0,
-    timeout: EMBEDDING_TIMEOUT_MS,
-  });
+function buildMemoryEmbeddingSettings(settings: MemoryEmbeddingSettings = {}): MemoryEmbeddingSettings {
+  const providerId = normalizeProviderId(settings.providerId);
+  return {
+    providerId,
+    providerName: settings.providerName || getDefaultServiceProviderName(providerId),
+    apiBase: settings.apiBase?.trim().replace(/\/+$/, "") || "",
+    apiKey: settings.apiKey?.trim() || "",
+    model: settings.model?.trim() || "",
+    temperature: settings.temperature ?? 0,
+  };
 }
 
-async function embedText(text: string, apiKey: string, apiBase: string) {
-  if (!apiKey) return null;
-  const embeddings = buildEmbeddings(apiKey, apiBase);
-  let timeout: NodeJS.Timeout | undefined;
+async function resolveEmbeddingConfig(settings: MemoryEmbeddingSettings = {}): Promise<ResolvedEmbeddingConfig | null> {
+  const normalized = buildMemoryEmbeddingSettings(settings);
+  if (!normalized.apiKey) return null;
+
   try {
-    return await Promise.race([
-      embeddings.embedQuery(text),
-      new Promise<null>((resolve) => {
-        timeout = setTimeout(() => resolve(null), EMBEDDING_TIMEOUT_MS);
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
+    const config = await resolveCapabilityModelConfig("embedding", normalized, {
+      apiKey: normalized.apiKey,
+      apiBase: normalized.apiBase,
+    });
+    if (config?.apiKey?.trim() && config.model?.trim()) {
+      const resolved = getProviderEmbeddingRuntimeConfig({
+        providerId: config.providerId,
+        providerName: normalized.providerName,
+        apiBase: config.apiBase,
+        model: config.model,
+      });
+      if (resolved) {
+        return {
+          providerName: resolved.providerName,
+          apiKey: config.apiKey.trim(),
+          apiBase: resolved.apiBase,
+          model: resolved.model,
+          transport: resolved.transport,
+        };
+      }
+    }
+  } catch {
+    // Fall back to provider defaults below.
   }
+
+  const fallback = getProviderEmbeddingRuntimeConfig({
+    providerId: normalized.providerId,
+    providerName: normalized.providerName,
+    apiBase: normalized.apiBase,
+    model: normalized.model,
+  });
+  if (!fallback) return null;
+
+  return {
+    providerName: fallback.providerName,
+    apiKey: normalized.apiKey,
+    apiBase: fallback.apiBase,
+    model: fallback.model,
+    transport: fallback.transport,
+  };
+}
+
+function asNumberVector(value: unknown): number[] | null {
+  return Array.isArray(value) && value.every((item) => typeof item === "number")
+    ? value
+    : null;
+}
+
+function normalizeGeminiModel(model: string) {
+  return model.startsWith("models/") ? model : `models/${model}`;
+}
+
+async function requestOpenAICompatibleEmbeddings(
+  inputs: string[],
+  config: ResolvedEmbeddingConfig,
+  signal: AbortSignal,
+) {
+  const response = await fetch(`${config.apiBase}/embeddings`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      input: inputs,
+      encoding_format: "float",
+    }),
+    signal,
+  });
+  const data = await response.json().catch(() => ({})) as OpenAIEmbeddingResponse;
+  if (!response.ok) {
+    throw new Error(data.error?.message ?? `${config.providerName} embeddings request failed: ${response.status}`);
+  }
+
+  const vectors = (data.data ?? [])
+    .map((item) => asNumberVector(item.embedding))
+    .filter((vector): vector is number[] => Boolean(vector));
+  return vectors.length === inputs.length ? vectors : null;
+}
+
+async function requestGeminiEmbeddings(
+  inputs: string[],
+  config: ResolvedEmbeddingConfig,
+  purpose: EmbeddingPurpose,
+  signal: AbortSignal,
+) {
+  const model = normalizeGeminiModel(config.model);
+  const response = await fetch(`${config.apiBase}/${model}:batchEmbedContents`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": config.apiKey,
+    },
+    body: JSON.stringify({
+      requests: inputs.map((input) => ({
+        model,
+        content: {
+          parts: [{ text: formatGeminiRetrievalText(input, purpose) }],
+        },
+      })),
+    }),
+    signal,
+  });
+  const data = await response.json().catch(() => ({})) as GeminiEmbeddingResponse;
+  if (!response.ok) {
+    throw new Error(data.error?.message ?? `${config.providerName} embeddings request failed: ${response.status}`);
+  }
+
+  const vectors = (data.embeddings ?? [])
+    .map((item) => asNumberVector(item.values))
+    .filter((vector): vector is number[] => Boolean(vector));
+  return vectors.length === inputs.length ? vectors : null;
+}
+
+async function requestEmbeddings(
+  inputs: string[],
+  config: ResolvedEmbeddingConfig,
+  purpose: EmbeddingPurpose,
+) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), EMBEDDING_TIMEOUT_MS);
+  try {
+    if (config.transport === "gemini") {
+      return await requestGeminiEmbeddings(inputs, config, purpose, controller.signal);
+    }
+    return await requestOpenAICompatibleEmbeddings(inputs, config, controller.signal);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function embedText(
+  text: string,
+  settings: MemoryEmbeddingSettings = {},
+  purpose: EmbeddingPurpose = "retrieval_query",
+  resolvedConfig?: ResolvedEmbeddingConfig,
+) {
+  const config = resolvedConfig ?? await resolveEmbeddingConfig(settings);
+  if (!config) return null;
+  const vectors = await requestEmbeddings([text], config, purpose).catch(() => null);
+  return vectors?.[0] ?? null;
 }
 
 function isPortFree(port: number) {
@@ -505,13 +700,14 @@ function toChromaMetadata(memory: MemoryEntry): Metadata {
   };
 }
 
-async function upsertChromaMemory(memory: MemoryEntry, apiKey?: string, apiBase?: string) {
-  if (!apiKey || !apiBase) {
+async function upsertChromaMemory(memory: MemoryEntry, settings: MemoryEmbeddingSettings = {}) {
+  const config = await resolveEmbeddingConfig(settings);
+  if (!config) {
     pendingChromaUpserts.add(memory.id);
     return false;
   }
   try {
-    const vector = await embedText(memory.content, apiKey, apiBase);
+    const vector = await embedText(memory.content, settings, "retrieval_document", config);
     if (!vector?.length) {
       pendingChromaUpserts.add(memory.id);
       return false;
@@ -562,12 +758,12 @@ async function wipeChromaCollection() {
   }
 }
 
-async function backfillPendingChroma(apiKey: string, apiBase: string) {
-  if (!apiKey || !apiBase || pendingChromaUpserts.size === 0) return;
+async function backfillPendingChroma(settings: MemoryEmbeddingSettings = {}) {
+  if (pendingChromaUpserts.size === 0) return;
   const ids = Array.from(pendingChromaUpserts).slice(0, 20);
   for (const id of ids) {
     const memory = getMemoryById(id);
-    if (memory) await upsertChromaMemory(memory, apiKey, apiBase);
+    if (memory) await upsertChromaMemory(memory, settings);
     else pendingChromaUpserts.delete(id);
   }
 }
@@ -608,10 +804,12 @@ function formatRecallEntry(entry: MemoryEntry) {
   return `- [${entry.kind} ${entry.dayKey}] ${entry.content}`;
 }
 
-async function semanticSearchEntries(query: string, apiKey: string, apiBase: string, options: RecallOptions = {}) {
+async function semanticSearchEntries(query: string, settings: MemoryEmbeddingSettings = {}, options: RecallOptions = {}) {
   const k = options.k ?? 6;
-  await backfillPendingChroma(apiKey, apiBase);
-  const vector = await embedText(query, apiKey, apiBase);
+  await backfillPendingChroma(settings);
+  const config = await resolveEmbeddingConfig(settings);
+  if (!config) return null;
+  const vector = await embedText(query, settings, "retrieval_query", config);
   if (!vector?.length) return null;
   const runtime = await getChromaRuntime();
   if (!runtime) return null;
@@ -631,29 +829,37 @@ async function semanticSearchEntries(query: string, apiKey: string, apiBase: str
 
 export async function searchMemories(
   query: string,
-  apiKey: string,
-  apiBase: string,
+  settingsOrApiKey: MemoryEmbeddingSettings | string,
+  apiBaseOrOptions?: string | RecallOptions,
   options: RecallOptions = {}
 ): Promise<MemoryEntry[]> {
   await getDb();
+  const memorySettings = typeof settingsOrApiKey === "string"
+    ? buildMemoryEmbeddingSettings({ apiKey: settingsOrApiKey, apiBase: typeof apiBaseOrOptions === "string" ? apiBaseOrOptions : undefined })
+    : buildMemoryEmbeddingSettings(settingsOrApiKey);
+  const recallOptions = typeof settingsOrApiKey === "string"
+    ? options
+    : (typeof apiBaseOrOptions === "string" ? options : apiBaseOrOptions ?? options);
   try {
-    const semantic = await semanticSearchEntries(query, apiKey, apiBase, options);
+    const semantic = await semanticSearchEntries(query, memorySettings, recallOptions);
     if (semantic?.length) return semantic;
   } catch {
     // Fall through to SQLite.
   }
-  return fallbackRank(query, options);
+  return fallbackRank(query, recallOptions);
 }
 
 export async function recallMemory(
   query: string,
-  apiKey: string,
-  apiBase: string,
+  settingsOrApiKey: MemoryEmbeddingSettings | string,
+  apiBaseOrK?: string | number,
   k = 6,
-  kinds: MemoryKind[] = ["daily", "dream", "long_term", "script"],
+  kinds: MemoryKind[] = ["daily", "dream", "script"],
   dayKey?: string
 ): Promise<string> {
-  const entries = await searchMemories(query, apiKey, apiBase, { k, kinds, dayKey });
+  const entries = typeof settingsOrApiKey === "string"
+    ? await searchMemories(query, settingsOrApiKey, typeof apiBaseOrK === "string" ? apiBaseOrK : "", { k, kinds, dayKey })
+    : await searchMemories(query, settingsOrApiKey, { k: typeof apiBaseOrK === "number" ? apiBaseOrK : k, kinds, dayKey });
   return entries.map(formatRecallEntry).join("\n");
 }
 
@@ -665,6 +871,7 @@ export async function storeMemory(
     key?: string;
     scope?: string;
     metadata?: Record<string, unknown>;
+    embeddingSettings?: MemoryEmbeddingSettings;
     apiKey?: string;
     apiBase?: string;
     dayKey?: string;
@@ -711,14 +918,26 @@ export async function storeMemory(
   });
 
   const stored = getMemoryById(id);
-  if (stored) await upsertChromaMemory(stored, options.apiKey, options.apiBase);
+  if (stored) {
+    await upsertChromaMemory(stored, options.embeddingSettings ?? {
+      apiKey: options.apiKey,
+      apiBase: options.apiBase,
+    });
+  }
   return id;
 }
 
 export async function storeScriptMemory(
   key: string,
   content: string,
-  options: { scope?: string; metadata?: Record<string, unknown>; apiKey?: string; apiBase?: string; dayKey?: string } = {}
+  options: {
+    scope?: string;
+    metadata?: Record<string, unknown>;
+    embeddingSettings?: MemoryEmbeddingSettings;
+    apiKey?: string;
+    apiBase?: string;
+    dayKey?: string;
+  } = {}
 ) {
   return storeMemory("script", content, { ...options, key });
 }
@@ -736,7 +955,15 @@ function parseFactList(raw: string): string[] {
   }
 }
 
-function scheduleDreamConsolidation(dayKey: string, options: { apiKey: string; apiBase: string; model: string }) {
+function scheduleDreamConsolidation(
+  dayKey: string,
+  options: {
+    apiKey: string;
+    apiBase: string;
+    model: string;
+    embeddingSettings?: MemoryEmbeddingSettings;
+  },
+) {
   const normalized = normalizeDayKey(dayKey);
   const existing = dreamTimers.get(normalized);
   if (existing) clearTimeout(existing);
@@ -754,7 +981,7 @@ export async function extractAndStore(
   apiKey: string,
   apiBase: string,
   callLLM: (prompt: string) => Promise<string>,
-  options: { model?: string } = {}
+  options: { model?: string; embeddingSettings?: MemoryEmbeddingSettings } = {}
 ) {
   if (!apiKey) return;
 
@@ -773,12 +1000,16 @@ Assistant: ${assistantReply}`;
       await storeMemory("daily", fact, {
         sessionId,
         dayKey,
-        apiKey,
-        apiBase,
+        embeddingSettings: options.embeddingSettings ?? { apiKey, apiBase },
         metadata: { source: "extracted_fact" },
       });
     }
-    scheduleDreamConsolidation(dayKey, { apiKey, apiBase, model: options.model || "gpt-4o-mini" });
+    scheduleDreamConsolidation(dayKey, {
+      apiKey,
+      apiBase,
+      model: options.model || "gpt-4o-mini",
+      embeddingSettings: options.embeddingSettings ?? { apiKey, apiBase },
+    });
   } catch {
     // Non-fatal: memory extraction should never break chat completion.
   }
@@ -795,13 +1026,14 @@ export async function consolidateDreamForDay(
     apiBase?: string;
     model?: string;
     callLLM?: (prompt: string) => Promise<string>;
+    embeddingSettings?: MemoryEmbeddingSettings;
   } = {}
 ): Promise<DreamConsolidationResult> {
   const normalized = normalizeDayKey(dayKey);
   if (!options.apiKey || !options.apiBase) return { ok: false, dayKey: normalized, reason: "missing_api_credentials" };
 
   await getDb();
-  const sourceMemories = allRows({ dayKey: normalized, kinds: ["daily", "long_term", "script"] }).filter(
+  const sourceMemories = allRows({ dayKey: normalized, kinds: ["daily", "script"] }).filter(
     (entry) => entry.kind !== "dream"
   );
   if (!sourceMemories.length) return { ok: false, dayKey: normalized, reason: "no_source_memories" };
@@ -838,8 +1070,10 @@ ${summarizeSourceMemories(sourceMemories)}`;
     const id = await storeMemory("dream", summary, {
       key: `dream:${normalized}`,
       dayKey: normalized,
-      apiKey: options.apiKey,
-      apiBase: options.apiBase,
+      embeddingSettings: options.embeddingSettings ?? {
+        apiKey: options.apiKey,
+        apiBase: options.apiBase,
+      },
       metadata: {
         source: "dream_consolidation",
         sourceMemoryIds: sourceMemories.map((entry) => entry.id),

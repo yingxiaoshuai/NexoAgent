@@ -375,7 +375,14 @@ export async function streamFromLLM(
   const lastUserMsg = [...messages].reverse().find((m) => m.role === "user")?.content ?? "";
   let memoryContext = "";
   if (settings.enableMemory) {
-    memoryContext = await recallMemory(lastUserMsg, effectiveApiKey, apiBase);
+    memoryContext = await recallMemory(lastUserMsg, {
+      providerId: primaryConfig.providerId,
+      providerName: settings.providerName,
+      apiKey: effectiveApiKey,
+      apiBase,
+      model: primaryConfig.model,
+      temperature: primaryConfig.temperature,
+    });
   }
   const knowledgeContext = settings.enableKnowledge ? await retrieveKnowledgeContext(lastUserMsg) : "";
   const attachmentContext = await loadAttachmentContext(attachments);
@@ -821,6 +828,16 @@ export async function extractMemoryAfterChat(
       ]);
       return typeof res.content === "string" ? res.content : "";
     },
-    { model: primaryConfig.model }
+    {
+      model: primaryConfig.model,
+      embeddingSettings: {
+        providerId: primaryConfig.providerId,
+        providerName: settings.providerName,
+        apiKey: primaryConfig.apiKey || fallbackApiKey,
+        apiBase: primaryConfig.apiBase,
+        model: primaryConfig.model,
+        temperature: primaryConfig.temperature,
+      },
+    }
   );
 }

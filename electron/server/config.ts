@@ -56,10 +56,11 @@ function resolveDataDir() {
 }
 
 export const DATA_DIR = resolveDataDir();
+export const LOG_DIR = path.join(DATA_DIR, "logs");
 export const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 export const KNOWLEDGE_DIR = path.join(DATA_DIR, "knowledge");
 export const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
-export const LOG_FILE = path.join(DATA_DIR, "app.log");
+export const LOG_FILE = path.join(LOG_DIR, "app.log");
 export const TOOL_SETTINGS_FILE = path.join(DATA_DIR, "tools.json");
 export const MCP_SERVERS_FILE = path.join(DATA_DIR, "mcp-servers.json");
 export const MODEL_PROFILES_FILE = path.join(DATA_DIR, "model-profiles.json");

@@ -1,7 +1,15 @@
 import type { Application } from "express";
 import type { ModelProfile } from "../../../src/shared/types";
 import { normalizeProviderId } from "../../../src/shared/providers";
-import { deleteModelProfile, discoverModels, getStoredModelProfileApiKey, listModelProfiles, refreshModelProfileContext, saveModelProfile } from "../model-profiles";
+import {
+  deleteModelProfile,
+  discoverModels,
+  ensureCapabilityModelProfile,
+  getStoredModelProfileApiKey,
+  listModelProfiles,
+  refreshModelProfileContext,
+  saveModelProfile,
+} from "../model-profiles";
 import { getWebSettings } from "../settings";
 import { toErrorMessage } from "../utils";
 
@@ -36,11 +44,26 @@ export function registerModelProfileRoutes(app: Application) {
     if (!profile.model?.trim()) return res.status(400).json({ error: "model required" });
     const fallbackApiKey = getWebSettings().apiKey ?? "";
     const incomingApiKey = profile.apiKey?.trim() ?? "";
-    const saved = await saveModelProfile({
-      ...profile,
-      apiKey: incomingApiKey || (!profile.id ? fallbackApiKey : ""),
-    } as Partial<ModelProfile> & Pick<ModelProfile, "name" | "apiBase" | "model">);
-    res.json(saved);
+    try {
+      const saved = await saveModelProfile({
+        ...profile,
+        apiKey: incomingApiKey || (!profile.id ? fallbackApiKey : ""),
+      } as Partial<ModelProfile> & Pick<ModelProfile, "name" | "apiBase" | "model">);
+
+      const capabilities = saved.capabilities ?? [];
+      if (!capabilities.includes("embedding") && !capabilities.includes("speech_to_text") && !capabilities.includes("text_to_speech")) {
+        await ensureCapabilityModelProfile("embedding", {
+          providerId: saved.providerId,
+          providerName: saved.providerName,
+          apiBase: saved.apiBase,
+          apiKey: incomingApiKey || fallbackApiKey,
+        }).catch(() => null);
+      }
+
+      res.json(saved);
+    } catch (error) {
+      res.status(400).json({ error: toErrorMessage(error) });
+    }
   });
 
   app.post("/api/model-profiles/:id/refresh-context", async (req, res) => {

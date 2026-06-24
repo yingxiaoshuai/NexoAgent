@@ -119,7 +119,14 @@ export const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
     const kinds = readMemoryKinds(args.kinds ?? args.kind);
     const dayKey = getOptionalStringArg(args, "dayKey") || getOptionalStringArg(args, "day_key");
     const k = getOptionalNumberArg(args, "k", 6);
-    const result = await recallMemory(query, ctx.apiKey, ctx.apiBase, k, kinds, dayKey || undefined);
+    const result = await recallMemory(query, {
+      providerId: ctx.settings.providerId,
+      providerName: ctx.settings.providerName,
+      apiKey: ctx.apiKey,
+      apiBase: ctx.apiBase,
+      model: ctx.settings.model,
+      temperature: ctx.settings.temperature,
+    }, undefined, k, kinds, dayKey || undefined);
     return result || "No relevant memory found.";
   },
 };

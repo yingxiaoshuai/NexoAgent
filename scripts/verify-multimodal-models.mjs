@@ -27,10 +27,26 @@ globalThis.fetch = async (input, init = {}) => {
     return Response.json({
       data: [
         { id: "gpt-4o", owned_by: "test", modalities: ["text", "vision"] },
+        { id: "text-embedding-3-small", owned_by: "test", type: "embedding" },
         { id: "gpt-image-1", owned_by: "test", type: "image-generation" },
         { id: "whisper-1", owned_by: "test", type: "speech-to-text" },
         { id: "tts-1", owned_by: "test", type: "text-to-speech" },
       ],
+    });
+  }
+
+  if (url.endsWith("/embeddings")) {
+    return Response.json({
+      data: [
+        {
+          embedding: [0.12, 0.34, 0.56],
+          index: 0,
+          object: "embedding",
+        },
+      ],
+      model: "text-embedding-3-small",
+      object: "list",
+      usage: { prompt_tokens: 3, total_tokens: 3 },
     });
   }
 
@@ -58,12 +74,13 @@ const multimodal = await import(pathToFileURL(path.join(repoRoot, "dist-electron
 const modelCall = await import(pathToFileURL(path.join(repoRoot, "dist-electron/electron/server/tools/model-call.js")));
 
 const discovered = await modelProfiles.discoverModels("https://provider.test/v1/", "good-key");
-assert.equal(discovered.length, 4);
+assert.equal(discovered.length, 5);
 assert.equal(discovered.some((model) => model.id === "gpt-4o" && model.capabilities.includes("vision")), true);
 assert.equal(discovered.some((model) => model.id === "gpt-image-1" && model.capabilities.includes("image_generation")), true);
+assert.equal(discovered.some((model) => model.id === "text-embedding-3-small" && model.capabilities.includes("embedding")), true);
 await assert.rejects(() => modelProfiles.discoverModels("https://provider.test/v1", "bad-key"), /bad key/);
 const discoveredWithDefaultBase = await modelProfiles.discoverModels("", "good-key", "openai-compatible");
-assert.equal(discoveredWithDefaultBase.length, 4);
+assert.equal(discoveredWithDefaultBase.length, 5);
 
 const primaryA = await modelProfiles.saveModelProfile({
   name: "Primary A",
@@ -161,6 +178,32 @@ await modelProfiles.saveModelProfile({
   capabilities: ["text_to_speech"],
   enabled: true,
 });
+
+const autoEmbedding = await modelProfiles.ensureCapabilityModelProfile("embedding", {
+  providerId: "openai-compatible",
+  apiBase: "https://provider.test/v1",
+  apiKey: "good-key",
+});
+assert.equal(autoEmbedding?.model, "text-embedding-3-small");
+
+const memoryModule = await import(pathToFileURL(path.join(repoRoot, "dist-electron/electron/memory.js")));
+await memoryModule.storeScriptMemory("embedding:auto", "Provider embedding auto provisioning works.", {
+  embeddingSettings: {
+    providerId: "openai-compatible",
+    providerName: "OpenAI Compatible",
+    apiBase: "https://provider.test/v1",
+    apiKey: "good-key",
+    model: "gpt-4o",
+  },
+});
+const memoryResults = await memoryModule.searchMemories("provisioning", {
+  providerId: "openai-compatible",
+  providerName: "OpenAI Compatible",
+  apiBase: "https://provider.test/v1",
+  apiKey: "good-key",
+  model: "gpt-4o",
+}, { kinds: ["script"], k: 5 });
+assert.equal(memoryResults.some((entry) => entry.content.includes("auto provisioning works")), true);
 
 const imageDataUrl = `data:image/png;base64,${sampleImage}`;
 const audioDataUrl = `data:audio/mpeg;base64,${sampleAudio}`;

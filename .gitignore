@@ -10,3 +10,5 @@ release
 !.env.example
 coverage
 *.tsbuildinfo
+/.claude
+/.cursor

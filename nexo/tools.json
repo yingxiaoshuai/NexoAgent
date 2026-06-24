@@ -123,7 +123,7 @@
       "name": "recall_memory",
       "label": "Recall Memory",
       "group": "memory",
-      "description": "Search daily, dream, long-term, or script memory for useful context.",
+      "description": "Search persistent daily, dream, or script memory stored in SQLite with embedding-backed recall when available.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -138,11 +138,10 @@
               "enum": [
                 "daily",
                 "dream",
-                "long_term",
                 "script"
               ]
             },
-            "description": "Optional memory kinds to search"
+            "description": "Optional persistent memory kinds to search"
           },
           "dayKey": {
             "type": "string",

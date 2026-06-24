@@ -23,6 +23,7 @@
     "preview": "vite preview --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "verify:context-management": "npm run build:electron && node scripts/verify-context-management.mjs",
+    "verify:provider-embeddings": "npm run build:electron && node scripts/verify-provider-embeddings.mjs",
     "verify:multimodal-models": "npm run build:electron && node scripts/verify-multimodal-models.mjs",
     "package": "npm run build && electron-builder --publish never"
   },

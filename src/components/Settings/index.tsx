@@ -1,6 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
 import {
-  Alert,
   Button,
   Checkbox,
   Divider,
@@ -96,9 +95,6 @@ function buildUi(lang: "zh" | "en") {
       ? "\u5728\u8fd9\u91cc\u7edf\u4e00\u7ba1\u7406\u5de5\u4f5c\u533a\u3001\u8bb0\u5fc6\u80fd\u529b\u548c\u6a21\u578b\u914d\u7f6e\u3002"
       : "Manage workspace behavior, memory features, and model profiles from one place.",
     createModel: lang === "zh" ? "\u65b0\u5efa\u6a21\u578b" : "New Model",
-    infoMessage: lang === "zh"
-      ? "\u73b0\u5728\u6a21\u578b\u5165\u53e3\u5df2\u6536\u655b\u5230\u201c\u65b0\u5efa\u6a21\u578b\u201d\u3002\u534f\u8bae\u53ea\u652f\u6301 OpenAI \u517c\u5bb9\u548c Anthropic \u517c\u5bb9\uff0c\u4f1a\u81ea\u52a8\u8bfb\u53d6\u5df2\u4fdd\u5b58\u7684 API Key \u4e0e\u670d\u52a1\u5546\u4fe1\u606f\u3002"
-      : "Model entry points are now consolidated under \"New Model\". The app supports OpenAI-compatible and Anthropic-compatible providers, and will reuse saved API keys and provider details when possible.",
     generalSection: lang === "zh" ? "\u901a\u7528\u8bbe\u7f6e" : "General Settings",
     modelSection: lang === "zh" ? "\u6a21\u578b\u5217\u8868" : "Model Profiles",
     workspacePath: lang === "zh" ? "\u5de5\u4f5c\u533a\u8def\u5f84" : "Workspace Path",
@@ -543,14 +539,6 @@ export const Settings: React.FC = () => {
         </Button>
       </div>
 
-      <Alert
-        type="info"
-        showIcon
-        message={ui.infoMessage}
-        style={{ marginBottom: 20 }}
-      />
-
-      <div style={{ marginBottom: 12, fontSize: 14, fontWeight: 600, color: colors.textPrimary }}>{ui.generalSection}</div>
       <Form
         key={formKey}
         form={form}

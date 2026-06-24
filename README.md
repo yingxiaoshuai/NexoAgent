@@ -2,7 +2,7 @@
 
 [English](./README.en.md)
 
-Nexo Agent 是一个本地优先的 AI Agent 桌面应用与 Web 控制台。它把对话、多模型编排、工具调用、长期记忆、本地知识库、技能系统、定时任务和渠道接入放在同一个工作台里，适合个人助理、研发协作和团队内部 Agent 场景。
+Nexo Agent 是一个本地优先的 AI Agent 桌面应用与 Web 控制台。它把对话、多模型编排、工具调用、持久记忆、本地知识库、技能系统、定时任务和渠道接入放在同一个工作台里，适合个人助理、研发协作和团队内部 Agent 场景。
 
 项目基于 Electron、React、TypeScript、Express 与 LangChain 构建。桌面端启动时会同时拉起本地后端和本地 Web 控制台，Web 端与 Electron 共用同一套会话、配置和 Agent 运行时。
 
@@ -11,7 +11,7 @@ Nexo Agent 是一个本地优先的 AI Agent 桌面应用与 Web 控制台。它
 - 多会话聊天：支持创建、切换、重命名、删除和持久化历史会话
 - 多模型配置：支持 OpenAI Compatible / Anthropic Compatible 等模型配置与主模型切换
 - Agent 工具调用：支持 `web_search`、`http_request`、`shell_command`、`file_read`、`file_write`、多模态工具等
-- 记忆系统：支持 `daily`、`dream`、`long_term`、`script` 四类记忆
+- 记忆系统：支持 `daily`、`dream`、`script` 三类跨会话持久记忆，使用 SQLite + embedding 检索
 - 知识库：支持本地 Markdown 文件管理、检索与聊天上下文注入
 - 技能系统：支持内置技能、工作区技能、托管技能、市场技能
 - 定时任务：支持 Cron 任务、手动触发和任务会话沉淀
@@ -102,7 +102,7 @@ flowchart LR
     MEMORY[memory.sqlite / dream memory]
     KNOWLEDGE[knowledge/]
     SKILLS[skills/]
-    LOGS[app.log]
+    LOGS[logs/app.log]
     TASKDATA[tasks.json]
     UPLOADS[uploads/]
   end
@@ -258,7 +258,7 @@ nexoAgent/
 - `skills/`：托管技能与市场技能
 - `tasks.json`：定时任务配置
 - `uploads/`：上传附件
-- `app.log`：运行日志
+- `logs/`：运行日志
 - `model-profiles.json`：模型配置
 
 ### 5. 前端 UI 层

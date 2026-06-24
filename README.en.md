@@ -2,7 +2,7 @@
 
 [中文](./README.md)
 
-Nexo Agent is a local-first AI Agent desktop and web console. It brings chat, tool use, long-term memory, a local knowledge base, skills, and scheduled tasks into one workspace for personal assistants or team-internal agent workflows.
+Nexo Agent is a local-first AI Agent desktop and web console. It brings chat, tool use, persistent memory, a local knowledge base, skills, and scheduled tasks into one workspace for personal assistants or team-internal agent workflows.
 
 The project is built with Electron, React, TypeScript, Ant Design, Express, and LangChain. It can run as an Electron desktop app and also exposes a local web console that uses the same sessions, settings, and runtime capabilities.
 
@@ -11,7 +11,7 @@ The project is built with Electron, React, TypeScript, Ant Design, Express, and 
 - Multi-session chat: create, switch, rename, delete, persist, and stream conversations.
 - OpenAI-compatible models: configure API Base URL, API Key, model, temperature, planning mode, context turns, max tool steps, and optional context-budget overrides.
 - Tool calling: use LangChain tool calling for search, HTTP requests, model sub-calls, calculation, file read/write, memory recall, skill search/install, and shell commands.
-- Local memory: store `daily`, `dream`, `long_term`, and `script` memories in SQLite, with semantic recall when embeddings are available.
+- Local memory: store persistent `daily`, `dream`, and `script` memories in SQLite, with embedding-backed semantic recall when available.
 - Dream memory: consolidate daily memories into reusable dream records for cross-session context.
 - Local knowledge base: create, edit, delete, browse, preview, and retrieve Markdown documents.
 - Skills: load built-in, workspace, managed, and marketplace-installed skills into the Agent prompt.
@@ -161,7 +161,7 @@ nexoAgent/
 │   └── skills/                   # Built-in skills
 ├── docs/                         # Project documentation
 ├── openspec/                     # OpenSpec changes and capability specs
-└── .nexo-data/                   # Local runtime data, generated during development
+└── .NexoAgent/                   # Local runtime data, generated during development
 ```
 
 ## Agent Tools
@@ -176,7 +176,7 @@ Built-in tools are declared in `nexo/tools.json`, and their executors live in `e
 | `calculator` | Evaluate a math expression |
 | `file_read` | Read a file or list a directory inside allowed roots |
 | `file_write` | Write or append a file inside allowed roots |
-| `recall_memory` | Search daily, dream, long-term, or script memories |
+| `recall_memory` | Search persistent daily, dream, or script memories |
 | `search_skills` | Search skill marketplaces or local skills |
 | `create_skill` | Create a managed local skill from conversation input |
 | `install_skill` | Install a skill from a supported marketplace |
@@ -187,18 +187,17 @@ File tools are restricted to the configured workspace and extra file access root
 
 ## Memory
 
-The memory system lives in `electron/memory.ts` and stores data under `.nexo-data/` by default.
+The memory system lives in `electron/memory.ts` and stores data under `~/.NexoAgent/` by default.
 
 | Kind | Description |
 | --- | --- |
 | `daily` | Facts extracted from conversations by calendar day |
-| `dream` | A consolidated summary of one day of daily, long-term, and script memories |
-| `long_term` | Facts that remain useful across sessions |
-| `script` | Workflow state and key data for repeatable scripts or processes |
+| `dream` | A consolidated summary of one day of daily and script memories |
+| `script` | Workflow state and key data for repeatable scripts or processes, persisted across sessions |
 
-The source of truth is `.nexo-data/memory.sqlite`. When an API Key and embedding support are available, Nexo tries to use Chroma for semantic retrieval. If vector retrieval is unavailable, it falls back to SQLite keyword matching.
+The source of truth is `~/.NexoAgent/memory.sqlite`. When an API Key and embedding support are available, Nexo tries to use Chroma for semantic retrieval. If vector retrieval is unavailable, it falls back to SQLite keyword matching.
 
-Thread compaction is intentionally separate from durable memory. Long-running chats keep a rolling thread summary in session state for current work, while only stable preferences, workflows, conventions, and long-lived facts are promoted into cross-session memory.
+Thread compaction is intentionally separate from durable memory. Long-running chats keep a rolling thread summary in session state for current work, while persistent daily, dream, and script memories remain available for cross-session recall.
 
 ## Knowledge Base
 
@@ -238,7 +237,7 @@ Each task has a name, Cron expression, prompt, and enabled state. Tasks can run 
 Runtime data is stored primarily in:
 
 ```text
-.nexo-data/
+%USERPROFILE%/.NexoAgent
 ```
 
 Common contents include:
@@ -249,7 +248,8 @@ Common contents include:
 - Chroma vector data
 - Knowledge-base files
 - Skill and marketplace configuration
-- Tasks and logs
+- Tasks
+- Runtime logs under `logs/`
 - Uploaded attachments
 
 This directory should usually not be committed.

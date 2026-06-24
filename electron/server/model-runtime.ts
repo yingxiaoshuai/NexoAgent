@@ -1,6 +1,12 @@
 import type { AgentSettings, ChatMessage, ModelCapability, ProviderId, ThinkingEffort } from "../../src/shared/types";
 import { isModelCapability } from "../../src/shared/types";
-import { findStoredModelProfile, findStoredModelProfileByCapability, getPrimaryModelProfile } from "./model-profiles";
+import {
+  ensureCapabilityModelProfile,
+  findStoredModelProfile,
+  findStoredModelProfileByCapability,
+  getPrimaryModelProfile,
+  resolveProviderModelConnection,
+} from "./model-profiles";
 import { resolveStoredModelContextBudget } from "./model-context";
 import type { ToolExecutionContext } from "./types";
 import { getOptionalStringArg, getStringArg } from "./utils";
@@ -200,7 +206,10 @@ export async function resolveModelConfigFromArgs(
   }
 
   if (capability) {
-    const profile = await findStoredModelProfileByCapability(capability)
+    const profile = await findStoredModelProfileByCapability(capability, {
+      providerId: ctx.settings.providerId,
+      apiBase: ctx.apiBase,
+    })
       ?? (capability === "chat" ? await findStoredModelProfileByCapability("orchestration") : null);
     if (profile) {
       const budget = await resolveStoredModelContextBudget({ profile, settings: ctx.settings });
@@ -229,6 +238,37 @@ export async function resolveModelConfigFromArgs(
   }
 
   throw new Error(`Unable to resolve model profile: ${profileQuery}`);
+}
+
+export async function resolveCapabilityModelConfig(
+  capability: ModelCapability,
+  settings: Partial<AgentSettings>,
+  connection?: { apiKey?: string; apiBase?: string },
+): Promise<ModelRuntimeConfig | null> {
+  const providerId = settings.providerId;
+  const resolvedConnection = await resolveProviderModelConnection({
+    providerId,
+    providerName: settings.providerName,
+    apiBase: connection?.apiBase || settings.apiBase,
+    apiKey: connection?.apiKey || settings.apiKey,
+  });
+
+  const profile = await ensureCapabilityModelProfile(capability, resolvedConnection);
+  if (!profile) {
+    return null;
+  }
+
+  const budget = await resolveStoredModelContextBudget({ profile, settings });
+  return toRuntimeConfig(
+    profile.name,
+    profile.providerId,
+    profile.apiBase,
+    profile.apiKey,
+    profile.model,
+    profile.temperature ?? settings.temperature ?? 0,
+    budget,
+    { thinkingEnabled: profile.thinkingEnabled, thinkingEffort: profile.thinkingEffort },
+  );
 }
 
 function normalizeChatContent(content: string | ChatContentPart[]) {

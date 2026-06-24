@@ -8,7 +8,7 @@ This audit compares Nexo's current runtime behavior against the product surface 
 - Tool calls: `web_search`, `calculator`, `file_read`, `file_write`, and `recall_memory` are executable and controlled by the tool toggles.
 - Knowledge files: create, edit, delete, browse, and keyword-retrieve into chat context when knowledge is enabled.
 - File attachments: uploaded text files are inlined into the current model context; image attachments are shown and referenced by metadata only.
-- Memory: stores short-term, long-term, and script memories in SQLite (`.nexo-data/memory.sqlite`). Embeddings are persisted in SQLite and used for cosine-similarity retrieval when an embedding key is available.
+- Memory: stores persistent daily, dream, and script memories in SQLite (`.nexo-data/memory.sqlite`). Semantic retrieval uses embeddings via Chroma when credentials are available, with SQLite keyword fallback.
 - Scheduled tasks: persisted 5-field cron tasks run in the background and create task result sessions; tasks can also be run manually.
 - Logs: streams the local app log over SSE.
 

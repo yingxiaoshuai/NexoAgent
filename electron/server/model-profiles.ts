@@ -4,9 +4,20 @@ import { getProviderDefaultApiBase, getProviderName, normalizeProviderId, normal
 import { MODEL_CAPABILITIES, type DiscoveredModel, type ModelCapability, type ModelProfile, type ProviderId, type ThinkingEffort } from "../../src/shared/types";
 import { DATA_DIR, MODEL_PROFILES_FILE } from "./config";
 import { deleteStoredModelContextCacheEntry, inferBudgetFromProviderMetadata, isExplicitProfileContextBudget, resolveModelContextBudgetWithLookup, resolveStoredModelContextBudget, upsertStoredModelContextCacheEntry } from "./model-context";
+import { getProviderEmbeddingAutoConfig } from "./provider-embeddings";
 
-interface StoredModelProfile extends Omit<ModelProfile, "hasApiKey"> {
+export interface StoredModelProfile extends Omit<ModelProfile, "hasApiKey"> {
   hasApiKey?: boolean;
+}
+
+export interface ModelProfileScope {
+  providerId?: ProviderId;
+  apiBase?: string;
+  apiKey?: string;
+}
+
+export interface ProviderModelConnection extends ModelProfileScope {
+  providerName?: string;
 }
 
 const CAPABILITY_KEYWORDS: Array<[ModelCapability, RegExp]> = [
@@ -15,11 +26,56 @@ const CAPABILITY_KEYWORDS: Array<[ModelCapability, RegExp]> = [
   ["vision", /\b(vision|vl|omni|gpt-4o|gpt-4\.1|qwen-vl|glm-4v|gemini|claude-3|internvl|llava)\b/i],
   ["speech_to_text", /\b(whisper|asr|transcribe|speech-to-text|stt)\b/i],
   ["text_to_speech", /\b(tts|speech|voice|audio)\b/i],
-  ["embedding", /\b(embed|embedding|text-embedding|bge|gte)\b/i],
+  ["embedding", /\b(embed|embedding|text-embedding|bge|gte|e5|m3e|jina|voyage)\b/i],
 ];
+const EMBEDDING_EXCLUSION_PATTERN = /\b(rerank|reranker)\b/i;
 
 function uniqueCapabilities(items: ModelCapability[]) {
   return MODEL_CAPABILITIES.filter((capability) => items.includes(capability));
+}
+
+function normalizeApiBaseForComparison(apiBase?: string | null) {
+  return (apiBase?.trim() || "").replace(/\/+$/, "").toLowerCase();
+}
+
+function normalizeScope(scope: ModelProfileScope = {}): { providerId: ProviderId; apiBase: string; apiKey: string } {
+  const providerId = normalizeProviderId(scope.providerId);
+  const apiBase = (scope.apiBase?.trim() || getProviderDefaultApiBase(providerId)).replace(/\/+$/, "");
+  return {
+    providerId,
+    apiBase,
+    apiKey: scope.apiKey?.trim() || "",
+  };
+}
+
+function profileMatchesScope(profile: Pick<StoredModelProfile, "providerId" | "apiBase">, scope: ModelProfileScope = {}) {
+  const normalizedScope = normalizeScope(scope);
+  return profile.providerId === normalizedScope.providerId
+    && normalizeApiBaseForComparison(profile.apiBase) === normalizeApiBaseForComparison(normalizedScope.apiBase);
+}
+
+function compareDiscoveredModelsForCapability(capability: ModelCapability) {
+  return (a: DiscoveredModel, b: DiscoveredModel) => {
+    const aHasCapability = Number(a.capabilities.includes(capability));
+    const bHasCapability = Number(b.capabilities.includes(capability));
+    if (bHasCapability !== aHasCapability) return bHasCapability - aHasCapability;
+
+    if (capability === "embedding") {
+      const aPreferred = Number(isPreferredEmbeddingModelId(a.id));
+      const bPreferred = Number(isPreferredEmbeddingModelId(b.id));
+      if (bPreferred !== aPreferred) return bPreferred - aPreferred;
+    }
+
+    const aOwnedBy = (a.ownedBy || "").localeCompare(b.ownedBy || "");
+    if (aOwnedBy !== 0) return aOwnedBy;
+    const labelWeight = a.label.localeCompare(b.label);
+    if (labelWeight !== 0) return labelWeight;
+    return a.id.localeCompare(b.id);
+  };
+}
+
+function isPreferredEmbeddingModelId(modelId: string) {
+  return /\b(text-embedding|embedding|bge|gte|e5|m3e|voyage|jina)\b/i.test(modelId) && !EMBEDDING_EXCLUSION_PATTERN.test(modelId);
 }
 
 export function inferModelCapabilities(modelId: string, metadata: Record<string, unknown> = {}): ModelCapability[] {
@@ -165,10 +221,13 @@ function compareProfilesForCapability(capability: ModelCapability) {
   };
 }
 
-export async function findStoredModelProfileByCapability(capability: ModelCapability): Promise<StoredModelProfile | null> {
+export async function findStoredModelProfileByCapability(
+  capability: ModelCapability,
+  scope?: ModelProfileScope,
+): Promise<StoredModelProfile | null> {
   const profiles = await readStoredProfiles();
   return profiles
-    .filter((profile) => profile.enabled && profile.capabilities?.includes(capability))
+    .filter((profile) => profile.enabled && profile.capabilities?.includes(capability) && (!scope || profileMatchesScope(profile, scope)))
     .sort(compareProfilesForCapability(capability))[0] ?? null;
 }
 
@@ -327,6 +386,15 @@ async function toDiscoveredModels(
   }));
 }
 
+export function pickBestDiscoveredModelForCapability(
+  models: DiscoveredModel[],
+  capability: ModelCapability,
+): DiscoveredModel | null {
+  return models
+    .filter((model) => model.capabilities.includes(capability))
+    .sort(compareDiscoveredModelsForCapability(capability))[0] ?? null;
+}
+
 export async function discoverModels(apiBase: string, apiKey: string, providerId: ProviderId = "openai-compatible"): Promise<DiscoveredModel[]> {
   const normalizedProvider = normalizeProviderId(providerId);
   const base = (apiBase.trim() || getProviderDefaultApiBase(normalizedProvider)).replace(/\/+$/, "");
@@ -357,6 +425,116 @@ export async function discoverModels(apiBase: string, apiKey: string, providerId
   }
 
   return toDiscoveredModels(data.data ?? [], normalizedProvider);
+}
+
+export async function resolveProviderModelConnection(scope: ProviderModelConnection = {}): Promise<ProviderModelConnection> {
+  const normalized = normalizeScope(scope);
+  const fallbackProviderName = normalizeServiceProviderName(scope.providerName || "", normalized.apiBase, normalized.providerId);
+  if (normalized.apiKey) {
+    return {
+      ...normalized,
+      providerName: fallbackProviderName,
+    };
+  }
+
+  const profiles = await readStoredProfiles();
+  const scopedProfile = profiles.find((profile) => profileMatchesScope(profile, normalized) && profile.apiKey?.trim());
+  if (scopedProfile) {
+    return {
+      providerId: scopedProfile.providerId,
+      providerName: scopedProfile.providerName,
+      apiBase: scopedProfile.apiBase,
+      apiKey: scopedProfile.apiKey.trim(),
+    };
+  }
+
+  return {
+    ...normalized,
+    providerName: fallbackProviderName,
+  };
+}
+
+export async function ensureCapabilityModelProfile(
+  capability: ModelCapability,
+  connection: ProviderModelConnection,
+  options: { enabled?: boolean } = {},
+): Promise<StoredModelProfile | null> {
+  const resolvedConnection = await resolveProviderModelConnection(connection);
+  const scopedConnection = capability === "embedding"
+    ? (() => {
+        const fallback = getProviderEmbeddingAutoConfig({
+          providerId: resolvedConnection.providerId,
+          providerName: resolvedConnection.providerName,
+          apiBase: resolvedConnection.apiBase,
+        });
+        return fallback ? { ...resolvedConnection, apiBase: fallback.apiBase } : resolvedConnection;
+      })()
+    : resolvedConnection;
+  const existing = await findStoredModelProfileByCapability(capability, scopedConnection);
+  if (existing) {
+    return existing;
+  }
+
+  if (!resolvedConnection.apiKey?.trim()) {
+    return null;
+  }
+
+  let candidate: DiscoveredModel | null = null;
+  try {
+    const discovered = await discoverModels(
+      scopedConnection.apiBase ?? "",
+      resolvedConnection.apiKey,
+      resolvedConnection.providerId,
+    );
+    candidate = pickBestDiscoveredModelForCapability(discovered, capability);
+  } catch {
+    candidate = null;
+  }
+
+  if (!candidate && capability === "embedding") {
+      const fallback = getProviderEmbeddingAutoConfig({
+        providerId: resolvedConnection.providerId,
+        providerName: resolvedConnection.providerName,
+        apiBase: scopedConnection.apiBase,
+      });
+    if (fallback) {
+      const saved = await saveModelProfile({
+        name: fallback.model,
+        providerId: fallback.providerId,
+        providerName: fallback.providerName,
+        apiBase: fallback.apiBase,
+        apiKey: resolvedConnection.apiKey,
+        model: fallback.model,
+        capabilities: [capability],
+        description: `Auto-configured ${capability} model from provider defaults.`,
+        enabled: options.enabled ?? true,
+      });
+      return getStoredModelProfile(saved.id);
+    }
+  }
+
+  if (!candidate) {
+    return null;
+  }
+
+  const saved = await saveModelProfile({
+    name: candidate.label || candidate.id,
+    providerId: resolvedConnection.providerId,
+    providerName: normalizeServiceProviderName(
+      resolvedConnection.providerName,
+      resolvedConnection.apiBase ?? "",
+      resolvedConnection.providerId,
+    ),
+    apiBase: resolvedConnection.apiBase ?? getProviderDefaultApiBase(resolvedConnection.providerId),
+    apiKey: resolvedConnection.apiKey,
+    model: candidate.id,
+    capabilities: candidate.capabilities.length ? candidate.capabilities : [capability],
+    description: candidate.ownedBy
+      ? `Auto-discovered ${capability} model from ${candidate.ownedBy}.`
+      : `Auto-discovered ${capability} model from provider.`,
+    enabled: options.enabled ?? true,
+  });
+  return getStoredModelProfile(saved.id);
 }
 
 export async function resolveAndPersistModelContextBudget(profile: Partial<ModelProfile> | null, discoveredModel?: Partial<DiscoveredModel> | null) {

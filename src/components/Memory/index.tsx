@@ -9,7 +9,7 @@ import { OverflowMenuButton } from "../Common/OverflowMenuButton";
 
 const { Text } = Typography;
 
-type MemoryKind = "daily" | "dream" | "long_term" | "script";
+type MemoryKind = "daily" | "dream" | "script";
 
 interface MemoryEntry {
   id: string;
@@ -52,27 +52,22 @@ export const MemoryPanel: React.FC = () => {
     dreamGenerateFailed: lang === "zh" ? "\u68a6\u5883\u751f\u6210\u5931\u8d25" : "Failed to regenerate the dream memory.",
     dailyLabel: lang === "zh" ? "\u6bcf\u65e5\u8bb0\u5fc6" : "Daily",
     dailyDescription: lang === "zh"
-      ? "\u6309\u81ea\u7136\u65e5\u4fdd\u5b58\u5bf9\u8bdd\u4e2d\u62bd\u53d6\u7684\u4e8b\u5b9e\uff0c\u4f5c\u4e3a\u68a6\u5883\u6574\u5408\u548c\u53ec\u56de\u7684\u57fa\u7840\u3002"
-      : "Facts extracted from conversations and stored by day.",
+      ? "\u6309\u81ea\u7136\u65e5\u6301\u4e45\u4fdd\u5b58\u5bf9\u8bdd\u4e2d\u62bd\u53d6\u7684\u4e8b\u5b9e\uff0c\u652f\u6301\u8de8\u4f1a\u8bdd\u53ec\u56de\u4e0e embedding \u68c0\u7d22\u3002"
+      : "Conversation facts stored persistently by day for cross-session and embedding-backed recall.",
     dreamLabel: lang === "zh" ? "\u68a6\u5883\u8bb0\u5fc6" : "Dream",
     dreamDescription: lang === "zh"
-      ? "\u628a\u67d0\u4e00\u5929\u7684\u8bb0\u5fc6\u603b\u7ed3\u4e3a\u53ef\u53ec\u56de\u7684\u68a6\u5883\u8bb0\u5f55\uff0c\u5e2e\u52a9\u540e\u7eed\u56de\u7b54\u8fde\u63a5\u4e0a\u4e0b\u6587\u3002"
-      : "A synthesized daily summary for future recall.",
-    longTermLabel: lang === "zh" ? "\u957f\u671f\u8bb0\u5fc6" : "Long-term",
-    longTermDescription: lang === "zh"
-      ? "\u4fdd\u5b58\u8de8\u5bf9\u8bdd\u4ecd\u7136\u6709\u6548\u7684\u4e8b\u5b9e\uff0c\u5e76\u53c2\u4e0e\u8bed\u4e49\u53ec\u56de\u3002"
-      : "Facts that remain useful across conversations.",
+      ? "\u628a\u6bcf\u65e5\u8bb0\u5fc6\u4e0e\u811a\u672c\u8bb0\u5fc6\u6574\u5408\u4e3a\u53ef\u6301\u4e45\u68c0\u7d22\u7684\u68a6\u5883\u8bb0\u5f55\uff0c\u5e2e\u52a9\u540e\u7eed\u8de8\u4f1a\u8bdd\u8fde\u63a5\u4e0a\u4e0b\u6587\u3002"
+      : "Persistent synthesized summaries built from daily and script memories for future cross-session recall.",
     scriptLabel: lang === "zh" ? "\u811a\u672c\u8bb0\u5fc6" : "Script",
     scriptDescription: lang === "zh"
-      ? "\u4fdd\u5b58\u6d41\u7a0b\u8fd0\u884c\u72b6\u6001\u548c\u5173\u952e\u6570\u636e\uff0c\u4fdd\u8bc1\u811a\u672c\u591a\u6b21\u8fd0\u884c\u65f6\u7ed3\u679c\u4e00\u81f4\u3002"
-      : "State and data that help scripted workflows stay consistent.",
+      ? "\u6301\u4e45\u4fdd\u5b58\u6d41\u7a0b\u8fd0\u884c\u72b6\u6001\u548c\u5173\u952e\u6570\u636e\uff0c\u4fdd\u8bc1\u811a\u672c\u5728\u4e0d\u540c\u4f1a\u8bdd\u4e2d\u4e5f\u80fd\u7eed\u7528\u3002"
+      : "Persistent workflow state and keyed data that remain reusable across sessions.",
   }), [lang]);
 
   const kindMeta: Record<MemoryKind, { label: string; description: string; color: string }> = useMemo(
     () => ({
       daily: { label: ui.dailyLabel, description: ui.dailyDescription, color: "green" },
       dream: { label: ui.dreamLabel, description: ui.dreamDescription, color: "magenta" },
-      long_term: { label: ui.longTermLabel, description: ui.longTermDescription, color: "blue" },
       script: { label: ui.scriptLabel, description: ui.scriptDescription, color: "purple" },
     }),
     [ui],
