@@ -105,7 +105,7 @@ const dreamTimers = new Map<string, NodeJS.Timeout>();
 const chromaChildren = new Set<ChildProcess>();
 const MEMORY_TABLE_COLUMNS = ["id", "kind", "day_key", "content", "session_id", "key", "scope", "metadata", "created_at", "updated_at"];
 
-interface MemoryEmbeddingSettings extends Partial<Pick<AgentSettings, "providerId" | "providerName" | "apiBase" | "apiKey" | "model" | "temperature">> {}
+export interface MemoryEmbeddingSettings extends Partial<Pick<AgentSettings, "providerId" | "providerName" | "apiBase" | "apiKey" | "model" | "temperature">> {}
 
 interface ResolvedEmbeddingConfig {
   providerName: string;
@@ -665,6 +665,14 @@ async function embedText(
   return vectors?.[0] ?? null;
 }
 
+export async function embedRetrievalText(
+  text: string,
+  settings: MemoryEmbeddingSettings = {},
+  purpose: EmbeddingPurpose = "retrieval_query",
+) {
+  return embedText(text, settings, purpose);
+}
+
 function isPortFree(port: number) {
   return new Promise<boolean>((resolve) => {
     const server = createServer();
@@ -797,6 +805,16 @@ async function getChromaRuntime(): Promise<ChromaRuntime | null> {
   })();
   chromaRuntime = runtimePromise;
   return runtimePromise;
+}
+
+export async function getChromaCollection(name: string, metadata: Metadata = { source: "nexo-agent" }) {
+  const runtime = await getChromaRuntime();
+  if (!runtime) return null;
+  return runtime.client.getOrCreateCollection({
+    name,
+    embeddingFunction: null,
+    metadata,
+  });
 }
 
 function toChromaMetadata(memory: MemoryEntry): Metadata {

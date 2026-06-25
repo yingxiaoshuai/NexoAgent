@@ -524,7 +524,9 @@ export async function streamFromLLM(
     ]);
     memoryContext = mergeMemoryContext(taskMemoryContext, operationalMemoryContext);
   }
-  const knowledgeContext = settings.enableKnowledge ? await retrieveKnowledgeContext(lastUserMsg) : "";
+  const knowledgeContext = settings.enableKnowledge
+    ? await retrieveKnowledgeContext(currentSessionMemoryQuery || lastUserMsg, memoryEmbeddingSettings)
+    : "";
   const attachmentContext = await loadAttachmentContext(attachments);
 
   const trimmedAuxiliarySections = trimSectionsToBudget([

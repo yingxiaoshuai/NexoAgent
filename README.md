@@ -12,7 +12,7 @@ Nexo Agent 是一个本地优先的 AI Agent 桌面应用与 Web 控制台。它
 - 多模型配置：支持 OpenAI Compatible / Anthropic Compatible 等模型配置与主模型切换
 - Agent 工具调用：支持 `web_search`、`http_request`、`shell_command`、`file_read`、`file_write`、多模态工具等
 - 记忆系统：支持 `daily`、`dream`、`script` 三类跨会话持久记忆，使用 SQLite + embedding 检索
-- 知识库：支持本地 Markdown 文件管理、检索与聊天上下文注入
+- 知识库：支持本地 Markdown 文件管理、embedding 向量检索、关键词兜底与聊天上下文注入
 - 技能系统：支持内置技能、工作区技能、托管技能、市场技能
 - 定时任务：支持 Cron 任务、手动触发和任务会话沉淀
 - 渠道接入：支持 Web、飞书、钉钉、企业微信、微信公众号等渠道配置
@@ -325,7 +325,7 @@ release/
 
 - 渠道页目前以配置管理为主，不是完整的 IM 生产级接入平台
 - MCP 服务当前主要是配置入口，完整发现与调用链路仍可继续增强
-- 知识库检索偏轻量，适合本地 Markdown 召回，不等同企业级 RAG
+- 知识库检索是本地 Markdown 的向量/关键词混合召回，不等同企业级 RAG，引用、权限和高级排序仍需进一步完善
 - 多模态能力依赖模型配置是否具备图像/音频能力
 
 ## License

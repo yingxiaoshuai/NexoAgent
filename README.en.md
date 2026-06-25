@@ -13,7 +13,7 @@ The project is built with Electron, React, TypeScript, Ant Design, Express, and 
 - Tool calling: use LangChain tool calling for search, HTTP requests, model sub-calls, calculation, file read/write, memory recall, skill search/install, and shell commands.
 - Local memory: store persistent `daily`, `dream`, and `script` memories in SQLite, with embedding-backed semantic recall when available.
 - Dream memory: consolidate daily memories into reusable dream records for cross-session context.
-- Local knowledge base: create, edit, delete, browse, preview, and retrieve Markdown documents.
+- Local knowledge base: create, edit, delete, browse, preview, and retrieve Markdown documents with Chroma-backed semantic recall when embeddings are available.
 - Skills: load built-in, workspace, managed, and marketplace-installed skills into the Agent prompt.
 - Scheduled tasks: run 5-field Cron prompt tasks on a schedule or manually, then save the result as a task session.
 - Attachments and logs: inline text attachments into context and inspect runtime logs from the Logs panel.
@@ -207,7 +207,7 @@ The knowledge base manages local Markdown files:
 - Create Markdown files
 - Edit and delete knowledge files
 - Preview Markdown
-- Retrieve relevant knowledge content during chat
+- Retrieve relevant knowledge content during chat with semantic vector search when an embedding profile is available, falling back to keyword matching
 
 It is useful for project notes, team rules, operating procedures, business context, and other reference material that the model should reuse.
 
@@ -258,7 +258,7 @@ This directory should usually not be committed.
 
 - Feishu, DingTalk, WeChat, and WeCom channel pages currently save configuration only; they are not complete message runtimes yet.
 - MCP server support currently focuses on configuration management; process management, tool discovery, and runtime invocation are not fully wired.
-- Knowledge retrieval is lightweight and best suited to local Markdown recall; enterprise-grade RAG needs further work.
+- Knowledge retrieval is hybrid semantic/keyword recall for local Markdown notes; enterprise-grade RAG features such as permissions, citations, and advanced ranking need further work.
 - Image attachments are currently displayed and stored as metadata; image understanding requires a future vision-model path.
 - Web password auth endpoints exist, but the frontend does not yet enforce a full login gate.
 

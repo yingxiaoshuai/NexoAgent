@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { isMemoryKind, recallMemory, type MemoryKind } from "../../memory";
 import { KNOWLEDGE_DIR } from "../config";
-import { MAX_FILE_WRITE_BYTES } from "../knowledge";
-import { resolveMemoryEmbeddingSettings } from "../memory-embedding";
+import { MAX_FILE_WRITE_BYTES, upsertKnowledgeFile } from "../knowledge";
+import { resolveMemoryEmbeddingSettings, type MemoryEmbeddingSettings } from "../memory-embedding";
 import type { ToolExecutionContext } from "../types";
 import { getOptionalNumberArg, getOptionalStringArg, getStringArg, resolveDataPath } from "../utils";
 import { invokeModel } from "./model-call";
@@ -57,7 +57,7 @@ async function updateKnowledgeIndex(relPath: string, title: string, summary: str
   const indexPath = resolveDataPath(KNOWLEDGE_DIR, "index.md");
   const displayTitle = title.trim() || path.basename(relPath, ".md");
   const description = summary.trim() || "Agent-created knowledge note";
-  const line = `- [${displayTitle}](${relPath.replace(/\\/g, "/")}) — ${description}`;
+  const line = `- [${displayTitle}](${relPath.replace(/\\/g, "/")}) - ${description}`;
 
   let current = await fs.readFile(indexPath, "utf8").catch(() => "# Knowledge Index\n");
   if (!current.trim()) current = "# Knowledge Index\n";
@@ -77,7 +77,7 @@ async function appendKnowledgeLog(relPath: string, title: string, mode: string) 
   await fs.appendFile(logPath, `${entry}\n`, "utf8");
 }
 
-async function writeKnowledge(args: Record<string, unknown>) {
+async function writeKnowledge(args: Record<string, unknown>, embeddingSettings: MemoryEmbeddingSettings = {}) {
   const content = getStringArg(args, "content", ["body", "markdown"]);
   const title = getOptionalStringArg(args, "title", "");
   const source = getOptionalStringArg(args, "source", "");
@@ -103,6 +103,7 @@ async function writeKnowledge(args: Record<string, unknown>) {
     await updateKnowledgeIndex(relPath, title, summary);
     await appendKnowledgeLog(relPath, title, mode);
   }
+  void upsertKnowledgeFile(relPath, embeddingSettings).catch(() => undefined);
 
   return [
     "Knowledge note saved.",
@@ -111,23 +112,27 @@ async function writeKnowledge(args: Record<string, unknown>) {
   ].join("\n");
 }
 
+async function resolveToolEmbeddingSettings(ctx: ToolExecutionContext) {
+  return resolveMemoryEmbeddingSettings({
+    providerId: ctx.settings.providerId,
+    providerName: ctx.settings.providerName,
+    apiKey: ctx.apiKey,
+    apiBase: ctx.apiBase,
+    model: ctx.settings.model,
+    temperature: ctx.settings.temperature,
+  });
+}
+
 export const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
   invoke_model: async (args, ctx) => invokeModel(args, ctx),
   shell_command: async (args, ctx) => runShellCommand(args, ctx),
-  write_knowledge: async (args) => writeKnowledge(args),
+  write_knowledge: async (args, ctx) => writeKnowledge(args, await resolveToolEmbeddingSettings(ctx)),
   recall_memory: async (args, ctx) => {
     const query = getStringArg(args, "query", ["q"]);
     const kinds = readMemoryKinds(args.kinds ?? args.kind);
     const dayKey = getOptionalStringArg(args, "dayKey") || getOptionalStringArg(args, "day_key");
     const k = getOptionalNumberArg(args, "k", 6);
-    const embeddingSettings = await resolveMemoryEmbeddingSettings({
-      providerId: ctx.settings.providerId,
-      providerName: ctx.settings.providerName,
-      apiKey: ctx.apiKey,
-      apiBase: ctx.apiBase,
-      model: ctx.settings.model,
-      temperature: ctx.settings.temperature,
-    });
+    const embeddingSettings = await resolveToolEmbeddingSettings(ctx);
     const result = await recallMemory(query, embeddingSettings, undefined, k, kinds, dayKey || undefined);
     return result || "No relevant memory found.";
   },
