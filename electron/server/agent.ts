@@ -31,6 +31,7 @@ const MISSING_API_KEY_MESSAGE = "The current primary model does not have an API 
 const LOOP_GUARD_FALLBACK_MESSAGE = "\n\nThis run entered a repeated loop, so I stopped here for now. The tool results gathered so far are still available. Send \"continue\" if you want me to keep working from the current results.";
 const EMPTY_RESPONSE_FALLBACK_MESSAGE = "I did not produce a valid reply. Please try again, or review the model configuration and retry.";
 const USER_INTERRUPTED_FALLBACK_MESSAGE = "Stopped the current run.";
+const TOKEN_EVENT_CHUNK_SIZE = 120;
 const CONTEXT_COMPACTION_NOTICE = [
   "\u5df2\u63a5\u8fd1\u4e0a\u4e0b\u6587\u4e0a\u9650\uff0c\u6211\u5df2\u5c06\u8f83\u65e9\u7684\u5f53\u524d\u4f1a\u8bdd\u5185\u5bb9\u538b\u7f29\u6210\u6458\u8981\uff1b\u63a5\u4e0b\u6765\u4f1a\u7ee7\u7eed\u57fa\u4e8e\u538b\u7f29\u6458\u8981\u3001\u5f53\u524d\u4f1a\u8bdd\u5c3e\u90e8\u548c\u957f\u671f\u8bb0\u5fc6\u5de5\u4f5c\u3002",
   "",
@@ -44,6 +45,12 @@ function buildDoneEvent(
 ): Extract<StreamEvent, { type: "done" }> {
   pushEvent(requestId, event);
   return event;
+}
+
+function pushTokenText(requestId: string, content: string) {
+  for (let index = 0; index < content.length; index += TOKEN_EVENT_CHUNK_SIZE) {
+    pushEvent(requestId, { type: "token", content: content.slice(index, index + TOKEN_EVENT_CHUNK_SIZE) });
+  }
 }
 
 function interruptedContent(content: string) {
@@ -641,9 +648,7 @@ export async function streamFromLLM(
         maxTokens: resolvedBudget.reservedOutputTokens ?? 2048,
         thinking: thinkingConfig,
       });
-      for (const char of result.content) {
-        pushEvent(requestId, { type: "token", content: char });
-      }
+      pushTokenText(requestId, result.content);
       const finalContent = `${compactionNotice}${result.content}`;
       const doneEvent: Extract<StreamEvent, { type: "done" }> = {
         type: "done",

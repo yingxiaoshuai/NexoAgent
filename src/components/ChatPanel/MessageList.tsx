@@ -9,15 +9,49 @@ interface Props {
   hasInput: boolean;
 }
 
+const STREAM_SCROLL_THROTTLE_MS = 90;
+
 export const MessageList: React.FC<Props> = ({ onSuggest, hasInput }) => {
   const { messages, streaming, toolCalls, messageBlocks, undoableMessageIds, undoAssistantMessage } = useChatStore();
   const { colors } = useTheme();
   const { t } = useI18n();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastScrollAtRef = useRef(0);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const scrollToBottom = () => {
+      scrollTimerRef.current = null;
+      lastScrollAtRef.current = Date.now();
+      bottomRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth", block: "end" });
+    };
+
+    if (!streaming) {
+      if (scrollTimerRef.current) {
+        clearTimeout(scrollTimerRef.current);
+        scrollTimerRef.current = null;
+      }
+      scrollToBottom();
+      return;
+    }
+
+    const elapsed = Date.now() - lastScrollAtRef.current;
+    if (elapsed >= STREAM_SCROLL_THROTTLE_MS) {
+      scrollToBottom();
+      return;
+    }
+
+    if (!scrollTimerRef.current) {
+      scrollTimerRef.current = setTimeout(scrollToBottom, STREAM_SCROLL_THROTTLE_MS - elapsed);
+    }
   }, [messages, streaming, toolCalls, messageBlocks]);
+
+  useEffect(() => () => {
+    if (scrollTimerRef.current) {
+      clearTimeout(scrollTimerRef.current);
+      scrollTimerRef.current = null;
+    }
+  }, []);
 
   if (messages.length === 0) {
     return (

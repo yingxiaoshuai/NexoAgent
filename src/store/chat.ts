@@ -14,6 +14,8 @@ import {
 } from "../shared/providers";
 import type { ToolCallEvent } from "../components/ChatPanel/ToolCallSteps";
 
+const TOKEN_FLUSH_INTERVAL_MS = 50;
+
 export interface SessionMeta {
   id: string;
   title: string;
@@ -315,22 +317,50 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       const toolStartTimes: Record<string, number> = {};
       let full = "";
+      let pendingToken = "";
+      let tokenFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
-      const appendToken = (token: string) => {
-        full += token;
+      const applyTokenChunk = (chunk: string) => {
+        if (!chunk) return;
         set((state) => {
           const blocks = [...(state.messageBlocks[serverTurnId] ?? [])];
           const last = blocks[blocks.length - 1];
           if (last?.type === "text") {
-            blocks[blocks.length - 1] = { type: "text", content: last.content + token };
+            blocks[blocks.length - 1] = { type: "text", content: last.content + chunk };
           } else {
-            blocks.push({ type: "text", content: token });
+            blocks.push({ type: "text", content: chunk });
           }
           return {
             messages: state.messages.map((message) => (message.id === serverTurnId ? { ...message, content: full } : message)),
             messageBlocks: { ...state.messageBlocks, [serverTurnId]: blocks },
           };
         });
+      };
+
+      const flushPendingTokens = () => {
+        if (tokenFlushTimer) {
+          clearTimeout(tokenFlushTimer);
+          tokenFlushTimer = null;
+        }
+        const chunk = pendingToken;
+        pendingToken = "";
+        applyTokenChunk(chunk);
+      };
+
+      const scheduleTokenFlush = () => {
+        if (tokenFlushTimer) return;
+        tokenFlushTimer = setTimeout(() => {
+          tokenFlushTimer = null;
+          const chunk = pendingToken;
+          pendingToken = "";
+          applyTokenChunk(chunk);
+        }, TOKEN_FLUSH_INTERVAL_MS);
+      };
+
+      const appendToken = (token: string) => {
+        full += token;
+        pendingToken += token;
+        scheduleTokenFlush();
       };
 
       const cancel = subscribeStream(requestId, (event) => {
@@ -340,6 +370,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         if (event.type === "tool_call") {
+          flushPendingTokens();
           const toolCall: ToolCallEvent = {
             id: event.id as string,
             name: event.name as string,
@@ -380,6 +411,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         if (event.type === "done") {
+          flushPendingTokens();
           const status = String(event.status ?? "completed") as ChatMessage["status"];
           set((state) => ({
             streaming: false,
@@ -400,6 +432,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         }
 
         if (event.type === "error") {
+          flushPendingTokens();
           set((state) => ({
             streaming: false,
             cancelStream: () => {},
@@ -415,6 +448,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
       set({
         cancelStream: () => {
+          flushPendingTokens();
           void apiPost<{ ok: boolean }>(`/api/chat/${requestId}/interrupt`, {}).catch(() => undefined);
           cancel();
           set((state) => ({

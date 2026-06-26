@@ -1,6 +1,6 @@
 {
   "name": "nexo-agent",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "private": true,
   "description": "Nexo Agent desktop and web console built with Electron, React, TypeScript, and Ant Design.",
   "main": "dist-electron/electron/bootstrap.js",

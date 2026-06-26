@@ -15,6 +15,22 @@ interface TreeNode {
   isLeaf?: boolean;
 }
 
+interface KnowledgeApiNode {
+  name: string;
+  path: string;
+  type: "file" | "dir";
+  children?: KnowledgeApiNode[];
+}
+
+function mapApiNodeToTreeNode(node: KnowledgeApiNode): TreeNode {
+  return {
+    key: node.path,
+    title: node.name,
+    isLeaf: node.type === "file",
+    children: node.children?.map(mapApiNodeToTreeNode),
+  };
+}
+
 export default function Knowledge() {
   const { colors } = useTheme();
   const { lang, t } = useI18n();
@@ -105,8 +121,8 @@ export default function Knowledge() {
 
   const loadTree = async () => {
     try {
-      const data = await apiGet<TreeNode[]>("/api/knowledge/tree");
-      setTreeData(data);
+      const data = await apiGet<KnowledgeApiNode[]>("/api/knowledge/tree");
+      setTreeData(data.map(mapApiNodeToTreeNode));
     } catch {
       void message.error(ui.loadTreeFailed);
     }

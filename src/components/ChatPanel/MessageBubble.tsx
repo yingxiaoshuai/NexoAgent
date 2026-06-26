@@ -104,15 +104,15 @@ function getMessageStatusMeta(status: ChatMessage["status"], t: ReturnType<typeo
   }
 }
 
-export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, blocks, undoable, onUndo }) => {
+const MessageBubbleComponent: React.FC<Props> = ({ message, streaming, toolCalls, blocks, undoable, onUndo }) => {
   const { colors } = useTheme();
   const { t } = useI18n();
   const isUser = message.role === "user";
   const toolMap = new Map((toolCalls ?? []).map((toolCall) => [toolCall.id, toolCall]));
   const hasBlocks = !isUser && Boolean(blocks?.length);
   const apiBase = getApiBase();
-  const safeContent = !isUser ? stripDsmlArtifacts(message.content) : message.content;
-  const generatedArtifacts = !isUser ? extractUploadArtifacts(safeContent) : [];
+  const safeContent = useMemo(() => (!isUser ? stripDsmlArtifacts(message.content) : message.content), [isUser, message.content]);
+  const generatedArtifacts = useMemo(() => (!isUser ? extractUploadArtifacts(safeContent) : []), [isUser, safeContent]);
   const statusMeta = !isUser ? getMessageStatusMeta(message.status, t) : null;
   const isUndone = message.status === "undone";
 
@@ -286,3 +286,12 @@ export const MessageBubble: React.FC<Props> = ({ message, streaming, toolCalls, 
     </div>
   );
 };
+
+export const MessageBubble = React.memo(MessageBubbleComponent, (prev, next) => (
+  prev.message === next.message
+  && prev.streaming === next.streaming
+  && prev.toolCalls === next.toolCalls
+  && prev.blocks === next.blocks
+  && prev.attachments === next.attachments
+  && prev.undoable === next.undoable
+));

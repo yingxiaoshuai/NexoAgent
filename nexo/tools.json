@@ -3,7 +3,8 @@
   "defaultEnabled": [
     "shell_command",
     "invoke_model",
-    "recall_memory"
+    "recall_memory",
+    "store_script_memory"
   ],
   "tools": [
     {
@@ -153,6 +154,41 @@
         },
         "required": [
           "query"
+        ]
+      }
+    },
+    {
+      "name": "store_script_memory",
+      "label": "Store Script Memory",
+      "group": "memory",
+      "description": "Create or update a keyed script memory in SQLite for deterministic reusable workflows. Use this after turning a repeated user workflow into a stable script, command, or runbook that should be recalled across sessions.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Stable unique key for the workflow, such as workflow:release-build or project:nexo-agent:script-memory."
+          },
+          "content": {
+            "type": "string",
+            "description": "Complete reusable script memory content, including purpose, triggers, inputs, stable steps, command, outputs, and verification."
+          },
+          "scope": {
+            "type": "string",
+            "description": "Optional scope such as project, user, or team."
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Optional structured metadata such as triggers, command, scriptPath, version, and verification commands."
+          },
+          "dayKey": {
+            "type": "string",
+            "description": "Optional YYYYMMDD day key. Omit to use today."
+          }
+        },
+        "required": [
+          "key",
+          "content"
         ]
       }
     }
