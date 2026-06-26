@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Tree, Button, Input, Modal, message } from "antd";
-import { BookOutlined, FileOutlined } from "@ant-design/icons";
+import { BookOutlined, FileOutlined, InboxOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import { apiGet, apiPost, apiDelete } from "../../services/api";
@@ -25,10 +25,18 @@ export default function Knowledge() {
   const [creating, setCreating] = useState(false);
   const [editContent, setEditContent] = useState("");
   const [newFileName, setNewFileName] = useState("");
+  const [dragActive, setDragActive] = useState(false);
 
   const ui = useMemo(
     () => ({
       createFile: lang === "zh" ? "\u65b0\u5efa\u6587\u4ef6" : "New File",
+      importFiles: lang === "zh" ? "\u62d6\u62fd\u6587\u4ef6\u5bfc\u5165" : "Drop files to import",
+      importHint: lang === "zh" ? "\u652f\u6301 Markdown \u548c\u6587\u672c\u6587\u4ef6\uff0c\u5bfc\u5165\u540e\u81ea\u52a8\u5efa\u7acb\u5411\u91cf\u7d22\u5f15" : "Markdown and text files are indexed automatically after import.",
+      importSuccess: (count: number) =>
+        lang === "zh" ? `\u5df2\u5bfc\u5165 ${count} \u4e2a\u6587\u4ef6` : `Imported ${count} file${count === 1 ? "" : "s"}.`,
+      importFailed: lang === "zh" ? "\u5bfc\u5165\u6587\u4ef6\u5931\u8d25" : "Failed to import files.",
+      unsupportedFile: (name: string) =>
+        lang === "zh" ? `\u5df2\u8df3\u8fc7\u4e0d\u652f\u6301\u7684\u6587\u4ef6\uff1a${name}` : `Skipped unsupported file: ${name}`,
       emptyState: lang === "zh" ? "\u9009\u62e9\u6216\u521b\u5efa\u77e5\u8bc6\u6587\u4ef6" : "Select or create a knowledge file",
       filePathPlaceholder: lang === "zh" ? "\u6587\u4ef6\u8def\u5f84\uff0c\u4f8b\u5982 docs/readme.md" : "File path, for example docs/readme.md",
       fileNameRequired: lang === "zh" ? "\u8bf7\u8f93\u5165\u6587\u4ef6\u540d" : "Please enter a file path.",
@@ -43,6 +51,57 @@ export default function Knowledge() {
     }),
     [lang],
   );
+
+  function normalizeImportedPath(fileName: string) {
+    const clean = fileName
+      .replace(/\\/g, "/")
+      .split("/")
+      .filter(Boolean)
+      .pop() || "imported.md";
+    const withoutUnsafeChars = clean.replace(/[<>:"|?*\u0000-\u001f]/g, "-").replace(/^\.+/, "").trim();
+    const fallback = `import-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
+    const safeName = withoutUnsafeChars || fallback;
+    return safeName.toLowerCase().endsWith(".md") ? safeName : `${safeName}.md`;
+  }
+
+  function isSupportedImport(file: File) {
+    const name = file.name.toLowerCase();
+    return (
+      name.endsWith(".md")
+      || name.endsWith(".markdown")
+      || name.endsWith(".txt")
+      || name.endsWith(".text")
+      || file.type.startsWith("text/")
+    );
+  }
+
+  async function importFiles(files: FileList | File[]) {
+    const list = Array.from(files);
+    if (!list.length) return;
+    let imported = 0;
+
+    try {
+      for (const file of list) {
+        if (!isSupportedImport(file)) {
+          void message.warning(ui.unsupportedFile(file.name));
+          continue;
+        }
+        const content = await file.text();
+        await apiPost("/api/knowledge/file", {
+          path: normalizeImportedPath(file.name),
+          content,
+        });
+        imported += 1;
+      }
+
+      if (imported > 0) {
+        void message.success(ui.importSuccess(imported));
+        await loadTree();
+      }
+    } catch {
+      void message.error(ui.importFailed);
+    }
+  }
 
   const loadTree = async () => {
     try {
@@ -143,8 +202,56 @@ export default function Knowledge() {
     fontFamily: "Consolas, Monaco, monospace",
   };
 
+  const handleKnowledgeDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragActive(false);
+    if (event.dataTransfer.files?.length) {
+      void importFiles(event.dataTransfer.files);
+    }
+  };
+
   return (
-    <div style={{ display: "flex", height: "100%", background: colors.bgPrimary, color: colors.textPrimary }}>
+    <div
+      style={{ display: "flex", height: "100%", background: colors.bgPrimary, color: colors.textPrimary, position: "relative" }}
+      onDragEnter={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        setDragActive(true);
+      }}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setDragActive(false);
+        }
+      }}
+      onDrop={handleKnowledgeDrop}
+    >
+      {dragActive && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 12,
+            zIndex: 10,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 10,
+            background: `${colors.bgPrimary}ee`,
+            border: `2px dashed ${colors.accent}`,
+            borderRadius: 8,
+            color: colors.textPrimary,
+            pointerEvents: "none",
+          }}
+        >
+          <InboxOutlined style={{ fontSize: 40, color: colors.accent }} />
+          <div style={{ fontWeight: 700 }}>{ui.importFiles}</div>
+          <div style={{ color: colors.textSecondary }}>{ui.importHint}</div>
+        </div>
+      )}
       <div
         style={{
           width: 260,
@@ -170,6 +277,21 @@ export default function Knowledge() {
           >
             {ui.createFile}
           </Button>
+          <div
+            style={{
+              marginTop: 10,
+              padding: "10px 8px",
+              border: `1px dashed ${colors.borderStrong}`,
+              borderRadius: 8,
+              color: colors.textSecondary,
+              fontSize: 12,
+              lineHeight: 1.5,
+              textAlign: "center",
+            }}
+          >
+            <InboxOutlined style={{ marginRight: 6 }} />
+            {ui.importFiles}
+          </div>
         </div>
         <div style={{ flex: 1, overflow: "auto", padding: "8px 4px" }}>
           <Tree

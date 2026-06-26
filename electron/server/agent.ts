@@ -559,7 +559,6 @@ export async function streamFromLLM(
     "Before changing files in a dirty worktree, inspect relevant diffs and preserve user edits. To fix generated corruption, apply the smallest targeted patch instead of restoring whole files.",
     "For shell_command: omit timeoutMs to use the configured default script timeout (Settings). Do not pass timeoutMs: 6000 or other short values for npm install, build, or dev commands.",
     "Never use shell_command to start vite, webpack, or npm run dev because those processes do not exit and will block until timeout.",
-    "Use write_knowledge to preserve reusable structured knowledge, stable project facts, procedures, or user-provided reference material in the local knowledge base when it will likely help future sessions.",
     `Primary model: ${primaryConfig.name} / ${primaryConfig.model}.`,
     `Resolved context budget: window=${budgetConfig.contextWindowTokens}, input=${budgetConfig.maxInputTokens}, compact=${budgetConfig.autoCompactTokenLimit}, source=${resolvedBudget.contextWindowSource ?? "default"}.`,
     "You are the orchestrator. Route specialist work by capability instead of asking the user for a model name.",

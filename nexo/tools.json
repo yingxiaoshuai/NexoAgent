@@ -3,8 +3,7 @@
   "defaultEnabled": [
     "shell_command",
     "invoke_model",
-    "recall_memory",
-    "write_knowledge"
+    "recall_memory"
   ],
   "tools": [
     {
@@ -154,52 +153,6 @@
         },
         "required": [
           "query"
-        ]
-      }
-    },
-    {
-      "name": "write_knowledge",
-      "label": "Write Knowledge",
-      "group": "knowledge",
-      "description": "Create or update a Markdown note in the local knowledge base when the conversation produces reusable structured knowledge, stable project facts, procedures, or user-provided reference material. Prefer concise notes with source, summary, and cross-reference friendly paths.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "path": {
-            "type": "string",
-            "description": "Optional Markdown path relative to the knowledge root, for example projects/nexo-agent/runtime-data.md. If omitted, a general path is generated from title."
-          },
-          "title": {
-            "type": "string",
-            "description": "Knowledge page title"
-          },
-          "content": {
-            "type": "string",
-            "description": "Markdown content to save"
-          },
-          "summary": {
-            "type": "string",
-            "description": "One-line summary used in knowledge/index.md"
-          },
-          "source": {
-            "type": "string",
-            "description": "Where the knowledge came from, such as conversation, document name, or URL"
-          },
-          "mode": {
-            "type": "string",
-            "enum": [
-              "overwrite",
-              "append"
-            ],
-            "description": "Write mode. Defaults to overwrite."
-          },
-          "updateIndex": {
-            "type": "boolean",
-            "description": "Whether to update knowledge/index.md and knowledge/log.md. Defaults to true."
-          }
-        },
-        "required": [
-          "content"
         ]
       }
     }

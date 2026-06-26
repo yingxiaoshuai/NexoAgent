@@ -13,7 +13,6 @@ const KNOWLEDGE_INDEX_SCAN_LIMIT = 300;
 const KNOWLEDGE_BACKFILL_FILE_LIMIT = 24;
 const KNOWLEDGE_CHUNK_CHARS = 1800;
 const KNOWLEDGE_CHUNK_OVERLAP = 160;
-const KNOWLEDGE_MAX_CHUNKS_PER_FILE = 16;
 const KNOWLEDGE_EXCERPT_CHARS = 3000;
 
 interface KnowledgeFile {
@@ -100,7 +99,7 @@ function chunkKnowledgeContent(content: string) {
   const chunks: string[] = [];
   const pushLongText = (text: string) => {
     const step = Math.max(1, KNOWLEDGE_CHUNK_CHARS - KNOWLEDGE_CHUNK_OVERLAP);
-    for (let start = 0; start < text.length && chunks.length < KNOWLEDGE_MAX_CHUNKS_PER_FILE; start += step) {
+    for (let start = 0; start < text.length; start += step) {
       chunks.push(text.slice(start, start + KNOWLEDGE_CHUNK_CHARS).trim());
     }
   };
@@ -124,10 +123,9 @@ function chunkKnowledgeContent(content: string) {
     } else {
       current = next;
     }
-    if (chunks.length >= KNOWLEDGE_MAX_CHUNKS_PER_FILE) break;
   }
-  if (current && chunks.length < KNOWLEDGE_MAX_CHUNKS_PER_FILE) chunks.push(current);
-  return chunks.filter(Boolean).slice(0, KNOWLEDGE_MAX_CHUNKS_PER_FILE);
+  if (current) chunks.push(current);
+  return chunks.filter(Boolean);
 }
 
 function knowledgeVectorId(rel: string, chunkIndex: number) {

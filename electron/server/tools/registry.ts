@@ -24,10 +24,9 @@ let toolDefs: ToolDef[] = [];
 let toolMap = new Map<string, ToolDef>();
 const enabledTools = new Set<string>();
 
-const TOOL_SETTINGS_VERSION = 10;
+const TOOL_SETTINGS_VERSION = 11;
 const DEFAULT_TOOL_MIGRATIONS: Record<number, string[]> = {
   9: ["shell_command", "invoke_model", "recall_memory"],
-  10: ["write_knowledge"],
 };
 
 async function loadBundledToolsFile() {
