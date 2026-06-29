@@ -11,6 +11,7 @@ Nexo Agent 是一个本地优先的 AI Agent 桌面应用与 Web 控制台。它
 - 多会话聊天：支持创建、切换、重命名、删除和持久化历史会话
 - 多模型配置：支持 OpenAI Compatible / Anthropic Compatible 等模型配置与主模型切换
 - Agent 工具调用：支持 `web_search`、`http_request`、`shell_command`、`file_read`、`file_write`、多模态工具等
+- 共享浏览器：桌面端内置与对话绑定的浏览器工作台，支持可视浏览、隐藏后台浏览、DOM-first 元素解析、截图回传、元素选择、历史记录、缩放和网页自动化操作
 - 记忆系统：支持 `daily`、`dream`、`script` 三类跨会话持久记忆，使用 SQLite + embedding 检索
 - 知识库：支持本地 Markdown 文件管理、embedding 向量检索、关键词兜底与聊天上下文注入
 - 技能系统：支持内置技能、工作区技能、托管技能、市场技能
@@ -166,6 +167,8 @@ nexoAgent/
 │  └─ server/
 │     ├─ index.ts                 # Express App 入口
 │     ├─ agent.ts                 # Agent 主循环、工具调用、上下文管理
+│     ├─ browser-manager.ts       # 共享浏览器、DOM 快照、CDP 点击、元素选择
+│     ├─ browser-embedding.ts     # 浏览器元素解析专用 MiniLM embedding
 │     ├─ settings.ts              # 运行时设置默认值与合并逻辑
 │     ├─ sessions.ts              # 会话持久化
 │     ├─ knowledge.ts             # 知识库加载与检索
@@ -182,6 +185,7 @@ nexoAgent/
 ├─ src/
 │  ├─ components/
 │  │  ├─ Layout/                  # 主布局与导航
+│  │  ├─ BrowserWorkbench/        # 浏览器工作台、地址栏、元素选择、会话并排布局
 │  │  ├─ SessionList/             # 会话侧栏
 │  │  ├─ ChatPanel/               # 聊天面板与消息渲染
 │  │  ├─ Memory/                  # 记忆面板
@@ -220,7 +224,46 @@ nexoAgent/
 - `electron/bootstrap.ts`
   处理 Electron 启动入口和重新拉起主进程
 
-### 2. Agent Runtime 层
+### 2. 浏览器与网页操作层
+
+- `electron/server/browser-manager.ts`
+  管理对话共享浏览器。它负责创建 Electron `BrowserView`、同步浏览器区域尺寸、维护地址/标题/前进后退状态、历史记录、缩放比例、截图产物和页面元素快照。
+- `src/components/BrowserWorkbench/`
+  提供浏览器工作台 UI。左侧是网页视图，中间竖向控制条提供缩放与布局拖拽，右侧是会话历史和对话面板。浏览器不是独立功能入口，而是会话旁边的可视组件。
+- `browser_action`
+  Agent 通过该工具操作共享浏览器，支持 `snapshot`、`resolve`、`navigate`、`click`、`type`、`scroll`、`run`、`screenshot`、`refresh`、`back`、`forward`。简单任务仍可直接使用固定 action；复合或模糊的网页任务优先使用 `action="run"`，由浏览器运行时在一次工具调用里完成目标解析、步骤执行和重试。
+- DOM-first 元素解析
+  浏览器会提取可见交互元素，包括标准按钮/链接/输入框、ARIA 控件、`cursor:pointer`、`onclick`、常见按钮 class/id/data 属性等。每个元素会生成描述文本、bounds、role、name、label、上下文和稳定 selector。
+- `browser_action.run`
+  `action="run"` 允许模型一次性提供 `goal`、默认 `target`、有序 `steps`、`strategy` 和 `onFailure`。浏览器运行时会为每个 step 复用 DOM descriptor、本地 MiniLM 语义匹配、DOM 规则、selector、xpath 和显式坐标回退，然后返回带每步结果的 run trace。
+  示例：
+  ```json
+  {
+    "action": "run",
+    "goal": "填写并发送测试邮件",
+    "steps": [
+      { "op": "click", "target": { "query": "写信", "role": "button" } },
+      { "op": "type", "target": { "query": "收件人" }, "text": "test@example.com" },
+      { "op": "type", "target": { "query": "主题" }, "text": "冒烟测试" },
+      { "op": "click", "target": { "query": "发送", "role": "button" }, "strategy": "auto" }
+    ],
+    "onFailure": { "retry": ["snapshot", "resolve", "scroll"] }
+  }
+  ```
+- 浏览器专用向量模型
+  `electron/server/browser-embedding.ts` 使用本地 `Xenova/all-MiniLM-L6-v2` 对元素描述和查询做语义匹配，只用于浏览器 DOM 解析，不用于长期记忆、知识库或会话摘要。
+- 严格动作保护
+  对 `发送`、`删除`、`保存`、`登录`、`取消` 等明确动作，resolver 不允许只靠 embedding 语义相似命中。候选元素必须包含对应动作锚点，避免把“发送”误点成“写信”这类相关但错误的控件。
+- CDP 底层点击
+  点击时先通过 DOM/ref 获取元素中心坐标，再使用 `webContents.debugger.sendCommand("Input.dispatchMouseEvent", ...)` 发送 `mouseMoved -> mousePressed -> mouseReleased` 事件序列。事件走 Chrome DevTools Protocol 输入管道，带 `buttons`、`modifiers` 和 `timestamp`，比 `HTMLElement.click()` 更接近真实鼠标操作。
+- 输入兜底
+  `type` 支持 ref/query，也支持当前焦点元素。当 SPA 重渲染导致旧 ref 失效，但输入框已经聚焦时，会回退到 `document.activeElement` 写入，避免 stale ref 直接失败；`browser_action.run` 中的 `type` step 也复用这一路径。
+- 元素选择
+  浏览器工具栏提供元素选择按钮。启用后页面 hover 会高亮元素，下一次点击会阻止网页默认行为，并把被选元素的名称、标签、role、文本、selector、bounds 和 URL 写入右侧聊天输入框，方便把页面元素作为对话上下文。
+- 截图回传
+  `screenshot` 会生成图片产物并附加到助手消息。它用于视觉状态确认、页面布局、图表、图片和用户明确要求“截图/展示”的场景；普通按钮和输入框定位仍以 DOM-first 为主。必要时 `browser_action.run` 也可通过 `strategy: "visionFallback"` 显式请求视觉兜底。
+
+### 3. Agent Runtime 层
 
 - `electron/server/agent.ts`
   项目的核心运行时，负责：
@@ -235,14 +278,14 @@ nexoAgent/
 - `electron/server/token-budget.ts`
   负责上下文预算、压缩阈值和 prompt token 估算
 
-### 3. API / 流式通信层
+### 4. API / 流式通信层
 
 - `electron/server/routes/`
   提供聊天、会话、记忆、知识库、工具、技能、任务、渠道、设置等 API
 - `electron/server/sse.ts`
   提供流式输出队列，前端通过 SSE 订阅 Agent 过程事件
 
-### 4. 数据与本地存储层
+### 5. 数据与本地存储层
 
 默认数据目录：
 
@@ -261,11 +304,12 @@ nexoAgent/
 - `logs/`：运行日志
 - `model-profiles.json`：模型配置
 
-### 5. 前端 UI 层
+### 6. 前端 UI 层
 
 主要由以下面板构成：
 
 - Chat：聊天与工具过程展示
+- Browser Workbench：对话旁的共享浏览器、地址栏、历史记录、元素选择、截图与网页操作
 - Memory：记忆查看、搜索、清理
 - Knowledge：知识库文件管理
 - Tools：工具启停与 MCP 配置
@@ -309,6 +353,11 @@ release/
 ## 开发建议
 
 - 修改 Agent 行为优先看 `electron/server/agent.ts`
+- 修改共享浏览器行为优先看：
+  - `electron/server/browser-manager.ts`
+  - `electron/server/browser-embedding.ts`
+  - `src/components/BrowserWorkbench/`
+  - `nexo/tools.json` 中的 `browser_action`
 - 新增工具时同步更新：
   - `nexo/tools.json`
   - `electron/server/tools/executors.ts`
@@ -327,6 +376,8 @@ release/
 - MCP 服务当前主要是配置入口，完整发现与调用链路仍可继续增强
 - 知识库检索是本地 Markdown 的向量/关键词混合召回，不等同企业级 RAG，引用、权限和高级排序仍需进一步完善
 - 多模态能力依赖模型配置是否具备图像/音频能力
+- 浏览器自动化优先依赖页面 DOM、ARIA 和 CDP 输入事件。Canvas、插件控件、跨域 iframe 内部元素、强反自动化页面和依赖站点私有协议的操作仍可能需要截图、人工确认或站点级适配。
+- 浏览器 MiniLM 模型只服务 DOM 元素解析，不参与记忆、知识库或用户长期数据召回。
 
 ## License
 

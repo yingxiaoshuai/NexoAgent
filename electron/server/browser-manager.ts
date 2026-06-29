@@ -3,12 +3,21 @@ import type {
   BrowserAction,
   BrowserActionRequest,
   BrowserActionResponse,
+  BrowserActionStrategy,
+  BrowserArtifact,
   BrowserBounds,
   BrowserElementDescriptor,
   BrowserElementPickResult,
   BrowserElementSnapshot,
   BrowserHistoryEntry,
   BrowserInteractionResult,
+  BrowserRunFailureAction,
+  BrowserRunFailurePolicy,
+  BrowserRunOperation,
+  BrowserRunStep,
+  BrowserRunStepResult,
+  BrowserRunTrace,
+  BrowserTargetDescriptor,
   BrowserResolveCandidate,
   BrowserResolveResult,
   BrowserState,
@@ -29,6 +38,9 @@ const DEFAULT_RESOLVE_LIMIT = 5;
 const DEFAULT_MIN_CONFIDENCE = 0.72;
 const DIRECT_ACTION_MIN_CONFIDENCE = 0.82;
 const AMBIGUITY_MARGIN = 0.08;
+const DEFAULT_RUN_WAIT_MS = 250;
+const DEFAULT_WHEEL_DELTA = 720;
+const DEFAULT_RUN_ATTEMPTS = 2;
 
 const SNAPSHOT_HELPER = String.raw`
 (() => {
@@ -703,9 +715,16 @@ function cosineSimilarity(a?: number[], b?: number[]) {
 function browserScript(kind: "click" | "type" | "scroll", payload: Record<string, unknown>) {
   return `(() => {
     const payload = ${JSON.stringify(payload)};
-    const el = payload.selector
-      ? document.querySelector(payload.selector)
-      : (${JSON.stringify(kind)} === "type" && document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const lookupElement = () => {
+      if (payload.selector) return document.querySelector(payload.selector);
+      if (payload.xpath) {
+        return document.evaluate(payload.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+      }
+      return ${JSON.stringify(kind)} === "type" && document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    };
+    const el = lookupElement();
     try {
       if (${JSON.stringify(kind)} === "scroll") {
         window.scrollBy({
@@ -801,6 +820,41 @@ function browserScript(kind: "click" | "type" | "scroll", payload: Record<string
   })()`;
 }
 
+function browserLocateScript(mode: "selector" | "xpath", value: string) {
+  return `(() => {
+    const mode = ${JSON.stringify(mode)};
+    const value = ${JSON.stringify(value)};
+    const toBounds = (rect) => ({
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    });
+    try {
+      let el = null;
+      if (mode === "selector") {
+        el = document.querySelector(value);
+      } else {
+        el = document.evaluate(value, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+      }
+      if (!(el instanceof Element)) {
+        return { ok: false, error: "No element matched " + mode + ": " + value };
+      }
+      if (typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ block: "center", inline: "center" });
+      }
+      const rect = el.getBoundingClientRect();
+      return {
+        ok: true,
+        selector: mode === "selector" ? value : undefined,
+        bounds: toBounds(rect),
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  })()`;
+}
+
 type BrowserSnapshot = {
   url: string;
   title: string;
@@ -815,6 +869,155 @@ type BrowserClickScriptResult = {
   error?: string;
   bounds?: BrowserBounds;
 };
+
+type BrowserLocateScriptResult = {
+  ok?: boolean;
+  error?: string;
+  selector?: string;
+  bounds?: BrowserBounds;
+};
+
+type BrowserPoint = {
+  x: number;
+  y: number;
+};
+
+type ResolvedBrowserTarget = {
+  target?: BrowserTargetDescriptor;
+  requestedStrategy: BrowserActionStrategy;
+  actualStrategy: string;
+  ref?: string;
+  selector?: string;
+  xpath?: string;
+  bounds?: BrowserBounds;
+  point?: BrowserPoint;
+  query?: string;
+  role?: string;
+  confidence?: number;
+  resolve?: BrowserResolveResult;
+  warning?: string;
+};
+
+function isPositiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function clampRatio(value: unknown, fallback = 0.5) {
+  const numeric = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return Math.max(0, Math.min(1, numeric));
+}
+
+function normalizeTargetBounds(bounds?: BrowserBounds) {
+  if (!bounds) return undefined;
+  const width = Math.max(1, Math.floor(Number(bounds.width) || 0));
+  const height = Math.max(1, Math.floor(Number(bounds.height) || 0));
+  return {
+    x: Math.floor(Number(bounds.x) || 0),
+    y: Math.floor(Number(bounds.y) || 0),
+    width,
+    height,
+  };
+}
+
+function buildTargetQuery(target?: BrowserTargetDescriptor, fallback = "") {
+  const parts = [
+    target?.query,
+    target?.text,
+    target?.ariaLabel,
+    target?.placeholder,
+    target?.nearText,
+    fallback,
+  ].map((value) => String(value ?? "").trim()).filter(Boolean);
+  return parts.join(" ").trim();
+}
+
+function hasNaturalLanguageTarget(target?: BrowserTargetDescriptor) {
+  return Boolean(buildTargetQuery(target));
+}
+
+function hasDirectLocatorTarget(target?: BrowserTargetDescriptor) {
+  return Boolean(
+    target?.ref?.trim()
+    || target?.selector?.trim()
+    || target?.xpath?.trim()
+    || target?.bounds
+    || target?.relativePosition,
+  );
+}
+
+function mergeTargetDescriptors(...targets: Array<BrowserTargetDescriptor | undefined>) {
+  const merged: BrowserTargetDescriptor = {};
+  for (const target of targets) {
+    if (!target) continue;
+    if (target.ref?.trim()) merged.ref = target.ref.trim();
+    if (target.query?.trim()) merged.query = target.query.trim();
+    if (target.role?.trim()) merged.role = target.role.trim();
+    if (target.text?.trim()) merged.text = target.text.trim();
+    if (target.selector?.trim()) merged.selector = target.selector.trim();
+    if (target.xpath?.trim()) merged.xpath = target.xpath.trim();
+    if (target.placeholder?.trim()) merged.placeholder = target.placeholder.trim();
+    if (target.ariaLabel?.trim()) merged.ariaLabel = target.ariaLabel.trim();
+    if (target.nearText?.trim()) merged.nearText = target.nearText.trim();
+    if (target.bounds) merged.bounds = normalizeTargetBounds(target.bounds);
+    if (target.relativePosition) {
+      merged.relativePosition = {
+        xRatio: clampRatio(target.relativePosition.xRatio),
+        yRatio: clampRatio(target.relativePosition.yRatio),
+      };
+    }
+  }
+  return Object.keys(merged).length ? merged : undefined;
+}
+
+function mergeFailurePolicies(
+  base?: BrowserRunFailurePolicy,
+  override?: BrowserRunFailurePolicy,
+): BrowserRunFailurePolicy | undefined {
+  if (!base && !override) return undefined;
+  return {
+    retry: override?.retry ?? base?.retry,
+    maxAttempts: override?.maxAttempts ?? base?.maxAttempts,
+    direction: override?.direction ?? base?.direction,
+    amount: override?.amount ?? base?.amount,
+    continueOnError: override?.continueOnError ?? base?.continueOnError,
+  };
+}
+
+function stepUsesEditableTarget(op: BrowserRunOperation) {
+  return op === "type";
+}
+
+function actionHintForRunOperation(op: BrowserRunOperation): BrowserAction | undefined {
+  if (op === "type") return "type";
+  if (op === "click" || op === "hover" || op === "drag" || op === "wheel") return "click";
+  if (op === "resolve") return "resolve";
+  return undefined;
+}
+
+function buildPointFromBounds(bounds: BrowserBounds, relativePosition?: { xRatio: number; yRatio: number }): BrowserPoint {
+  const xRatio = clampRatio(relativePosition?.xRatio);
+  const yRatio = clampRatio(relativePosition?.yRatio);
+  return {
+    x: Math.round(bounds.x + bounds.width * xRatio),
+    y: Math.round(bounds.y + bounds.height * yRatio),
+  };
+}
+
+function normalizeRunAttempts(policy?: BrowserRunFailurePolicy) {
+  const maxAttempts = Math.floor(Number(policy?.maxAttempts));
+  if (Number.isFinite(maxAttempts) && maxAttempts > 0) return maxAttempts;
+  return Array.isArray(policy?.retry) && policy.retry.length > 0 ? DEFAULT_RUN_ATTEMPTS : 1;
+}
+
+function shouldCaptureVisionFallback(strategy: BrowserActionStrategy, resolve?: BrowserResolveResult) {
+  return strategy === "visionFallback" || Boolean(resolve?.needsVisionFallback);
+}
+
+function requestUsesNaturalLanguageTargets(request: BrowserActionRequest) {
+  if (hasNaturalLanguageTarget(request.target)) return true;
+  if (request.goal?.trim() && !request.steps?.length) return true;
+  return Boolean(request.steps?.some((step) => hasNaturalLanguageTarget(step.target)));
+}
 
 export class BrowserManager {
   private mainWindow: BrowserWindow | null = null;
@@ -839,6 +1042,17 @@ export class BrowserManager {
   private history: BrowserHistoryEntry[] = [];
   private recentInteractionRef = "";
   private elementPickActive = false;
+
+  // Exposed for local verification scripts that exercise resolver logic without a live BrowserView.
+  setTestSnapshotData(
+    selectors: Array<[string, string]>,
+    descriptors: BrowserElementDescriptor[],
+    recentRef = "",
+  ) {
+    this.elementSelectors = new Map(selectors);
+    this.elementDescriptors = new Map(descriptors.map((descriptor) => [descriptor.ref, descriptor]));
+    this.recentInteractionRef = recentRef;
+  }
 
   setMainWindow(window: BrowserWindow | null) {
     if (!window) {
@@ -919,8 +1133,9 @@ export class BrowserManager {
 
   async executeAction(request: BrowserActionRequest): Promise<BrowserActionResponse> {
     const run = async () => {
+      this.assertModernBrowserActionRequest(request);
       await this.ensure();
-      if (request.action === "resolve" || request.query?.trim()) {
+      if (request.action === "resolve" || requestUsesNaturalLanguageTargets(request)) {
         browserEmbeddingService.warmup();
       }
       switch (request.action) {
@@ -931,11 +1146,13 @@ export class BrowserManager {
         case "navigate":
           return this.navigate(request.url);
         case "click":
-          return this.click(request.ref, request.query, request.minConfidence);
+          return this.click(request.target, request.strategy ?? "auto", request.minConfidence);
         case "type":
-          return this.type(request.ref, request.query, request.text ?? "", Boolean(request.submit), request.minConfidence);
+          return this.type(request.target, request.strategy ?? "auto", request.text ?? "", Boolean(request.submit), request.minConfidence);
         case "scroll":
           return this.scroll(request.direction ?? "down", request.amount);
+        case "run":
+          return this.run(request);
         case "screenshot":
           return this.screenshot();
         case "refresh":
@@ -945,13 +1162,45 @@ export class BrowserManager {
         case "forward":
           return this.forward();
         default:
-          throw new Error(`Unsupported browser_action.action: ${String(request.action)}. Supported actions: snapshot, resolve, navigate, click, type, scroll, screenshot, refresh, back, forward.`);
+          throw new Error(`Unsupported browser_action.action: ${String(request.action)}. Supported actions: snapshot, resolve, navigate, click, type, scroll, run, screenshot, refresh, back, forward.`);
       }
     };
 
     const queued = this.actionQueue.then(run, run);
     this.actionQueue = queued.catch(() => undefined);
     return queued;
+  }
+
+  private assertModernBrowserActionRequest(request: BrowserActionRequest) {
+    const legacyRootRecord = request as unknown as {
+      ref?: unknown;
+      query?: unknown;
+      role?: unknown;
+      bounds?: unknown;
+      relativePosition?: unknown;
+    };
+    const legacyRootFields = ["ref", "query", "role", "bounds", "relativePosition"].filter((key) => {
+      const value = legacyRootRecord[key as keyof typeof legacyRootRecord];
+      return value !== undefined && value !== null && String(value).trim() !== "";
+    });
+    if (legacyRootFields.length) {
+      throw new Error(
+        `browser_action no longer accepts top-level ${legacyRootFields.join(", ")}. Move element locators under target instead.`,
+      );
+    }
+
+    const legacyStepIndex = request.steps?.findIndex((step) => {
+      const record = step as unknown as { ref?: unknown; query?: unknown; role?: unknown };
+      return ["ref", "query", "role"].some((key) => {
+        const value = record[key as keyof typeof record];
+        return value !== undefined && value !== null && String(value).trim() !== "";
+      });
+    }) ?? -1;
+    if (legacyStepIndex >= 0) {
+      throw new Error(
+        `browser_action.run steps no longer accept ref/query/role at the step root. Move them under steps[${legacyStepIndex}].target instead.`,
+      );
+    }
   }
 
   async pickElement(): Promise<BrowserElementPickResult> {
@@ -1358,12 +1607,778 @@ export class BrowserManager {
     };
   }
 
+  private buildRunQuery(step: BrowserRunStep, target: BrowserTargetDescriptor | undefined, fallbackGoal?: string) {
+    return buildTargetQuery(target)
+      || (!hasDirectLocatorTarget(target) ? fallbackGoal?.trim() || "" : "");
+  }
+
+  private normalizeRunSteps(request: BrowserActionRequest) {
+    if (request.steps?.length) return request.steps;
+    const target = mergeTargetDescriptors(request.target);
+    if (request.url?.trim()) {
+      return [{ op: "navigate", url: request.url } satisfies BrowserRunStep];
+    }
+    if (request.key?.trim()) {
+      return [{ op: "key", key: request.key } satisfies BrowserRunStep];
+    }
+    if (request.direction || request.amount) {
+      return [{
+        op: "scroll",
+        direction: request.direction ?? "down",
+        amount: request.amount,
+      } satisfies BrowserRunStep];
+    }
+    if (typeof request.text === "string") {
+      return [{
+        op: "type",
+        target,
+        text: request.text,
+        submit: request.submit,
+        minConfidence: request.minConfidence,
+      } satisfies BrowserRunStep];
+    }
+    if (target) {
+      return [{
+        op: "click",
+        target,
+        minConfidence: request.minConfidence,
+      } satisfies BrowserRunStep];
+    }
+    if (request.goal?.trim()) {
+      return [{
+        op: "resolve",
+        target: mergeTargetDescriptors(target, { query: request.goal }),
+        minConfidence: request.minConfidence,
+      } satisfies BrowserRunStep];
+    }
+    return [] as BrowserRunStep[];
+  }
+
+  private async locateTargetBySelector(selector: string) {
+    if (!this.browserView) throw new Error("Browser runtime is not available.");
+    return await this.browserView.webContents.executeJavaScript(
+      browserLocateScript("selector", selector),
+      true,
+    ) as BrowserLocateScriptResult;
+  }
+
+  private async locateTargetByXPath(xpath: string) {
+    if (!this.browserView) throw new Error("Browser runtime is not available.");
+    return await this.browserView.webContents.executeJavaScript(
+      browserLocateScript("xpath", xpath),
+      true,
+    ) as BrowserLocateScriptResult;
+  }
+
+  private getViewportPoint(relativePosition?: { xRatio: number; yRatio: number }): BrowserPoint {
+    return {
+      x: Math.round((this.browserView?.getBounds().width ?? this.bounds.width) * clampRatio(relativePosition?.xRatio)),
+      y: Math.round((this.browserView?.getBounds().height ?? this.bounds.height) * clampRatio(relativePosition?.yRatio)),
+    };
+  }
+
+  private async resolveTarget(
+    target: BrowserTargetDescriptor | undefined,
+    op: BrowserRunOperation,
+    strategy: BrowserActionStrategy,
+    minConfidence?: number,
+  ): Promise<ResolvedBrowserTarget> {
+    const requestedStrategy = strategy ?? "auto";
+    const normalizedTarget = mergeTargetDescriptors(target);
+    const naturalQuery = buildTargetQuery(normalizedTarget);
+    const role = normalizedTarget?.role?.trim();
+    const actionHint = actionHintForRunOperation(op);
+    const requireEditable = stepUsesEditableTarget(op);
+
+    if (normalizedTarget?.ref?.trim()) {
+      const ref = normalizedTarget.ref.trim();
+      if (!this.elementSelectors.has(ref) && !this.elementDescriptors.has(ref)) {
+        await this.snapshot("resolve");
+      }
+      const selector = this.elementSelectors.get(ref);
+      const descriptor = this.elementDescriptors.get(ref);
+      if (selector || descriptor?.bounds) {
+        return {
+          target: normalizedTarget,
+          requestedStrategy,
+          actualStrategy: "ref",
+          ref,
+          selector,
+          bounds: normalizeTargetBounds(descriptor?.bounds),
+          query: naturalQuery,
+          role,
+          confidence: 1,
+        };
+      }
+    }
+
+    if (normalizedTarget?.selector?.trim() && (requestedStrategy === "auto" || requestedStrategy === "dom" || requestedStrategy === "css")) {
+      const selector = normalizedTarget.selector.trim();
+      const located = await this.locateTargetBySelector(selector);
+      if (located.ok) {
+        return {
+          target: normalizedTarget,
+          requestedStrategy,
+          actualStrategy: requestedStrategy === "css" ? "css" : "selector",
+          selector,
+          bounds: normalizeTargetBounds(located.bounds),
+          point: located.bounds ? buildPointFromBounds(located.bounds, normalizedTarget.relativePosition) : undefined,
+          query: naturalQuery,
+          role,
+          confidence: 1,
+        };
+      }
+    }
+
+    if (normalizedTarget?.xpath?.trim() && (requestedStrategy === "auto" || requestedStrategy === "xpath")) {
+      const xpath = normalizedTarget.xpath.trim();
+      const located = await this.locateTargetByXPath(xpath);
+      if (located.ok) {
+        return {
+          target: normalizedTarget,
+          requestedStrategy,
+          actualStrategy: "xpath",
+          xpath,
+          bounds: normalizeTargetBounds(located.bounds),
+          point: located.bounds ? buildPointFromBounds(located.bounds, normalizedTarget.relativePosition) : undefined,
+          query: naturalQuery,
+          role,
+          confidence: 1,
+        };
+      }
+    }
+
+    if (normalizedTarget?.bounds && (requestedStrategy === "auto" || requestedStrategy === "coordinate" || requestedStrategy === "cdp")) {
+      const bounds = normalizeTargetBounds(normalizedTarget.bounds);
+      return {
+        target: normalizedTarget,
+        requestedStrategy,
+        actualStrategy: "coordinate",
+        bounds,
+        point: bounds ? buildPointFromBounds(bounds, normalizedTarget.relativePosition) : undefined,
+        role,
+        confidence: 1,
+      };
+    }
+
+    if (normalizedTarget?.relativePosition && requestedStrategy === "coordinate") {
+      return {
+        target: normalizedTarget,
+        requestedStrategy,
+        actualStrategy: "coordinate-viewport",
+        point: this.getViewportPoint(normalizedTarget.relativePosition),
+        role,
+        confidence: 1,
+      };
+    }
+
+    if (naturalQuery) {
+      if (this.browserView) {
+        await this.snapshot("resolve");
+      } else if (!this.elementDescriptors.size) {
+        throw new Error("Browser runtime is not available.");
+      }
+      const resolve = await this.buildResolveResult(naturalQuery, {
+        action: actionHint,
+        role,
+        minConfidence: minConfidence ?? (op === "click" || op === "type" ? DIRECT_ACTION_MIN_CONFIDENCE : DEFAULT_MIN_CONFIDENCE),
+        requireEditable,
+      });
+      const candidate = resolve.candidates[0];
+      if (resolve.selectedRef) {
+        const ref = resolve.selectedRef;
+        const selector = this.elementSelectors.get(ref);
+        const descriptor = this.elementDescriptors.get(ref);
+        return {
+          target: normalizedTarget,
+          requestedStrategy,
+          actualStrategy: resolve.semanticReady ? "semantic" : "dom",
+          ref,
+          selector,
+          bounds: normalizeTargetBounds(descriptor?.bounds),
+          query: naturalQuery,
+          role,
+          confidence: candidate?.confidence,
+          resolve,
+          warning: shouldCaptureVisionFallback(requestedStrategy, resolve)
+            ? "DOM evidence is weak; vision fallback may be required."
+            : undefined,
+        };
+      }
+      return {
+        target: normalizedTarget,
+        requestedStrategy,
+        actualStrategy: resolve.semanticReady ? "semantic" : "dom",
+        query: naturalQuery,
+        role,
+        confidence: candidate?.confidence,
+        resolve,
+        warning: shouldCaptureVisionFallback(requestedStrategy, resolve)
+          ? "DOM resolver could not produce enough evidence; vision fallback may be required."
+          : undefined,
+      };
+    }
+
+    return {
+      target: normalizedTarget,
+      requestedStrategy,
+      actualStrategy: requestedStrategy,
+      query: naturalQuery,
+      role,
+      warning: "No browser target could be resolved from the provided descriptor.",
+    };
+  }
+
+  private async run(request: BrowserActionRequest): Promise<BrowserActionResponse> {
+    if (!this.browserView) throw new Error("Browser runtime is not available.");
+    const steps = this.normalizeRunSteps(request);
+    if (!steps.length) {
+      throw new Error("browser_action.run requires steps, or enough top-level fields to infer a single step.");
+    }
+
+    const defaultTarget = mergeTargetDescriptors(request.target);
+    const defaultStrategy = request.strategy ?? "auto";
+    const defaultFailure = request.onFailure;
+    const traceSteps: BrowserRunStepResult[] = [];
+    let blockingError = "";
+
+    for (let index = 0; index < steps.length; index += 1) {
+      const step = steps[index];
+      const effectiveTarget = mergeTargetDescriptors(
+        defaultTarget,
+        step.target,
+      );
+      const stepStrategy = step.strategy ?? defaultStrategy;
+      const failurePolicy = mergeFailurePolicies(defaultFailure, step.onFailure);
+      const result = await this.executeRunStep(
+        index,
+        step,
+        effectiveTarget,
+        stepStrategy,
+        failurePolicy,
+        request.goal,
+      );
+      traceSteps.push(result);
+      if (!result.ok && !failurePolicy?.continueOnError) {
+        blockingError = result.error || `Run step ${index + 1} failed.`;
+        break;
+      }
+    }
+
+    const snapshot = await this.snapshot("run");
+    const trace: BrowserRunTrace = {
+      goal: request.goal,
+      strategy: defaultStrategy,
+      onFailure: defaultFailure,
+      steps: traceSteps,
+      completedSteps: traceSteps.filter((step) => step.ok).length,
+      totalSteps: steps.length,
+      finalUrl: snapshot.url,
+      finalTitle: snapshot.title,
+    };
+    const firstFailure = blockingError || traceSteps.find((step) => !step.ok)?.error || "";
+    if (firstFailure) {
+      this.state = { ...this.state, lastAction: "run", error: firstFailure };
+      this.emit();
+      return { ...this.getState(), ok: false, run: trace };
+    }
+    this.state = { ...this.state, lastAction: "run", error: undefined };
+    this.emit();
+    return { ...this.getState(), ok: true, run: trace };
+  }
+
+  private async executeRunStep(
+    index: number,
+    step: BrowserRunStep,
+    target: BrowserTargetDescriptor | undefined,
+    strategy: BrowserActionStrategy,
+    failurePolicy: BrowserRunFailurePolicy | undefined,
+    goal?: string,
+  ): Promise<BrowserRunStepResult> {
+    const retriesExecuted: BrowserRunFailureAction[] = [];
+    const maxAttempts = normalizeRunAttempts(failurePolicy);
+    let lastResult: BrowserRunStepResult | null = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const result = await this.performRunStep(index, step, target, strategy, goal);
+      if (retriesExecuted.length) {
+        result.retries = [...retriesExecuted];
+      }
+      if (result.ok) return result;
+      lastResult = result;
+      if (attempt >= maxAttempts) break;
+      const retryActions = failurePolicy?.retry ?? [];
+      if (!retryActions.length) break;
+      retriesExecuted.push(...retryActions.filter((action) => !retriesExecuted.includes(action)));
+      await this.applyRunFailureActions(step, target, retryActions, goal, failurePolicy);
+    }
+
+    if (!lastResult) {
+      return {
+        index,
+        op: step.op,
+        ok: false,
+        strategy,
+        target,
+        error: "Run step did not execute.",
+      };
+    }
+
+    if (shouldCaptureVisionFallback(strategy, lastResult.resolve) && strategy === "visionFallback" && !lastResult.artifact) {
+      const screenshot = await this.screenshot().catch(() => null);
+      if (screenshot?.artifact) {
+        lastResult.artifact = screenshot.artifact;
+        lastResult.warning = lastResult.warning
+          ? `${lastResult.warning} Screenshot attached for visual fallback.`
+          : "Screenshot attached for visual fallback.";
+      }
+    }
+
+    return lastResult;
+  }
+
+  private async applyRunFailureActions(
+    step: BrowserRunStep,
+    target: BrowserTargetDescriptor | undefined,
+    retryActions: BrowserRunFailureAction[],
+    goal?: string,
+    failurePolicy?: BrowserRunFailurePolicy,
+  ) {
+    for (const retryAction of retryActions) {
+      switch (retryAction) {
+        case "snapshot":
+          await this.snapshot("resolve");
+          break;
+        case "resolve": {
+          const query = this.buildRunQuery(step, target, goal);
+          if (!query) break;
+          await this.snapshot("resolve");
+          await this.buildResolveResult(query, {
+            action: actionHintForRunOperation(step.op),
+            role: target?.role,
+            requireEditable: stepUsesEditableTarget(step.op),
+            minConfidence: step.minConfidence,
+          });
+          break;
+        }
+        case "scroll":
+          await this.scroll(
+            failurePolicy?.direction ?? step.direction ?? "down",
+            failurePolicy?.amount ?? step.amount ?? DEFAULT_WHEEL_DELTA,
+          );
+          break;
+        case "return-candidates":
+          break;
+      }
+    }
+  }
+
+  private async performRunStep(
+    index: number,
+    step: BrowserRunStep,
+    target: BrowserTargetDescriptor | undefined,
+    strategy: BrowserActionStrategy,
+    goal?: string,
+  ): Promise<BrowserRunStepResult> {
+    const base: BrowserRunStepResult = {
+      index,
+      op: step.op,
+      ok: false,
+      strategy,
+      target,
+    };
+    try {
+      switch (step.op) {
+        case "navigate": {
+          const response = await this.navigate(step.url);
+          return { ...base, ok: true, strategy: "navigate", interaction: response.interaction };
+        }
+        case "resolve": {
+          const query = this.buildRunQuery(step, target, goal);
+          if (!query) {
+            return { ...base, error: "Resolve step requires a target query, text, aria label, placeholder, or goal." };
+          }
+          await this.snapshot("resolve");
+          const resolve = await this.buildResolveResult(query, {
+            action: "resolve",
+            role: target?.role,
+            minConfidence: step.minConfidence,
+            requireEditable: stepUsesEditableTarget(step.op),
+          });
+          this.state = { ...this.state, resolve, lastAction: "run", error: undefined };
+          this.emit();
+          return {
+            ...base,
+            ok: Boolean(resolve.selectedRef || (!resolve.needsDisambiguation && resolve.candidates.length)),
+            strategy: resolve.semanticReady ? "semantic" : "dom",
+            resolve,
+            selectedRef: resolve.selectedRef,
+            confidence: resolve.candidates[0]?.confidence,
+            semanticReady: resolve.semanticReady,
+            semanticPending: resolve.semanticPending,
+            semanticError: resolve.semanticError,
+            error: resolve.selectedRef || (!resolve.needsDisambiguation && resolve.candidates.length)
+              ? undefined
+              : "DOM resolver could not confidently resolve the requested target.",
+          };
+        }
+        case "click":
+          return this.performRunClickStep(base, step, target, strategy, goal);
+        case "type":
+          return this.performRunTypeStep(base, step, target, strategy, goal);
+        case "scroll": {
+          const response = await this.scroll(step.direction ?? "down", step.amount);
+          return { ...base, ok: true, strategy: "scroll", interaction: response.interaction };
+        }
+        case "wheel":
+          return this.performRunWheelStep(base, step, target, strategy, goal);
+        case "hover":
+          return this.performRunHoverStep(base, step, target, strategy, goal);
+        case "drag":
+          return this.performRunDragStep(base, step, target, strategy, goal);
+        case "key":
+          return this.performRunKeyStep(base, step);
+        case "wait": {
+          await delay(Math.max(0, Math.floor(Number(step.waitMs ?? step.durationMs ?? DEFAULT_RUN_WAIT_MS) || DEFAULT_RUN_WAIT_MS)));
+          await this.waitForActionSettled();
+          await this.snapshot("run");
+          return { ...base, ok: true, strategy: "wait" };
+        }
+        case "screenshot": {
+          const response = await this.screenshot();
+          return { ...base, ok: true, strategy: "screenshot", artifact: response.artifact };
+        }
+        case "back":
+          await this.back();
+          return { ...base, ok: true, strategy: "history-back" };
+        case "forward":
+          await this.forward();
+          return { ...base, ok: true, strategy: "history-forward" };
+        case "refresh":
+          await this.refresh();
+          return { ...base, ok: true, strategy: "refresh" };
+        default:
+          return { ...base, error: `Unsupported run step: ${step.op}` };
+      }
+    } catch (error) {
+      return { ...base, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private buildRunResolutionTarget(step: BrowserRunStep, target: BrowserTargetDescriptor | undefined, goal?: string) {
+    const query = this.buildRunQuery(step, target, goal);
+    return mergeTargetDescriptors(
+      target,
+      query ? { query } : undefined,
+    );
+  }
+
+  private resultFromResolvedTarget(base: BrowserRunStepResult, resolved: ResolvedBrowserTarget, error?: string): BrowserRunStepResult {
+    const topCandidate = resolved.resolve?.candidates[0];
+    return {
+      ...base,
+      strategy: resolved.actualStrategy,
+      target: resolved.target,
+      selectedRef: resolved.ref,
+      selectedBounds: resolved.bounds,
+      confidence: resolved.confidence ?? topCandidate?.confidence,
+      resolve: resolved.resolve,
+      semanticReady: resolved.resolve?.semanticReady,
+      semanticPending: resolved.resolve?.semanticPending,
+      semanticError: resolved.resolve?.semanticError,
+      warning: resolved.warning,
+      error,
+    };
+  }
+
+  private async performRunClickStep(
+    base: BrowserRunStepResult,
+    step: BrowserRunStep,
+    target: BrowserTargetDescriptor | undefined,
+    strategy: BrowserActionStrategy,
+    goal?: string,
+  ): Promise<BrowserRunStepResult> {
+    if (!this.browserView) throw new Error("Browser runtime is not available.");
+    const resolved = await this.resolveTarget(this.buildRunResolutionTarget(step, target, goal), "click", strategy, step.minConfidence);
+    if (!resolved.ref && !resolved.selector && !resolved.xpath && !resolved.point && !resolved.bounds) {
+      return this.resultFromResolvedTarget(
+        base,
+        resolved,
+        resolved.resolve?.strictActionMismatch
+          ? "DOM resolver refused to click because the best candidate is only semantically related and does not contain the requested action text."
+          : resolved.warning || "No browser element could be resolved for click.",
+      );
+    }
+
+    const previousUrl = this.browserView.webContents.getURL();
+    let bounds = resolved.bounds;
+    if (resolved.selector || resolved.xpath) {
+      const result = await this.browserView.webContents.executeJavaScript(
+        browserScript("click", { ref: resolved.ref ?? "", selector: resolved.selector, xpath: resolved.xpath }),
+        true,
+      ) as BrowserClickScriptResult;
+      if (!result?.ok) {
+        return this.resultFromResolvedTarget(base, resolved, result?.error || "Failed to locate clickable bounds.");
+      }
+      bounds = normalizeTargetBounds(result.bounds) ?? bounds;
+    }
+
+    let interaction: BrowserInteractionResult;
+    if (resolved.point && (strategy === "coordinate" || resolved.actualStrategy.startsWith("coordinate"))) {
+      const pointer = await this.sendMouseClickPoint(resolved.point.x, resolved.point.y, bounds);
+      interaction = {
+        ...pointer,
+        action: "click",
+        ref: resolved.ref,
+        query: resolved.query,
+        bounds,
+      };
+    } else {
+      const pointer = await this.sendMouseClickAt(bounds);
+      interaction = {
+        ...pointer,
+        action: "click",
+        ref: resolved.ref,
+        query: resolved.query,
+        bounds,
+      };
+    }
+
+    this.recentInteractionRef = resolved.ref ?? this.recentInteractionRef;
+    await this.waitForActionSettled(previousUrl);
+    await this.snapshot("run");
+    return {
+      ...this.resultFromResolvedTarget(base, resolved),
+      ok: true,
+      strategy: `${resolved.actualStrategy}+${interaction.strategy ?? "input"}`,
+      selectedBounds: bounds,
+      interaction,
+    };
+  }
+
+  private async performRunTypeStep(
+    base: BrowserRunStepResult,
+    step: BrowserRunStep,
+    target: BrowserTargetDescriptor | undefined,
+    strategy: BrowserActionStrategy,
+    goal?: string,
+  ): Promise<BrowserRunStepResult> {
+    if (!this.browserView) throw new Error("Browser runtime is not available.");
+    const text = String(step.text ?? "");
+    const resolutionTarget = this.buildRunResolutionTarget(step, target, goal);
+    const resolved = resolutionTarget
+      ? await this.resolveTarget(resolutionTarget, "type", strategy, step.minConfidence)
+      : {
+        requestedStrategy: strategy,
+        actualStrategy: "active-element",
+      } as ResolvedBrowserTarget;
+    if (resolutionTarget && !resolved.ref && !resolved.selector && !resolved.xpath) {
+      return this.resultFromResolvedTarget(base, resolved, resolved.warning || "No editable browser element could be resolved for typing.");
+    }
+
+    const previousUrl = this.browserView.webContents.getURL();
+    const result = await this.browserView.webContents.executeJavaScript(
+      browserScript("type", {
+        ref: resolved.ref ?? "",
+        selector: resolved.selector,
+        xpath: resolved.xpath,
+        text,
+        submit: Boolean(step.submit),
+      }),
+      true,
+    ) as { ok?: boolean; error?: string };
+    if (!result?.ok) {
+      return this.resultFromResolvedTarget(base, resolved, result?.error || "Typing failed.");
+    }
+    this.recentInteractionRef = resolved.ref ?? "";
+    await this.waitForActionSettled(previousUrl);
+    await this.snapshot("run");
+    return {
+      ...this.resultFromResolvedTarget(base, resolved),
+      ok: true,
+      strategy: resolved.actualStrategy,
+      interaction: {
+        action: "type",
+        ref: resolved.ref,
+        query: resolved.query,
+        strategy: resolved.actualStrategy,
+        bounds: resolved.bounds,
+      },
+    };
+  }
+
+  private async performRunWheelStep(
+    base: BrowserRunStepResult,
+    step: BrowserRunStep,
+    target: BrowserTargetDescriptor | undefined,
+    strategy: BrowserActionStrategy,
+    goal?: string,
+  ): Promise<BrowserRunStepResult> {
+    if (!this.browserView) throw new Error("Browser runtime is not available.");
+    const resolved = target || goal
+      ? await this.resolveTarget(this.buildRunResolutionTarget(step, target, goal), "wheel", strategy, step.minConfidence)
+      : {
+        requestedStrategy: strategy,
+        actualStrategy: "viewport",
+        point: this.getViewportPoint(),
+      } as ResolvedBrowserTarget;
+    const point = resolved.point
+      || (resolved.bounds ? buildPointFromBounds(resolved.bounds, resolved.target?.relativePosition) : undefined)
+      || this.getViewportPoint();
+    const deltaX = Number.isFinite(step.deltaX) ? Number(step.deltaX) : step.direction === "left"
+      ? -Math.abs(step.amount ?? DEFAULT_WHEEL_DELTA)
+      : step.direction === "right"
+        ? Math.abs(step.amount ?? DEFAULT_WHEEL_DELTA)
+        : 0;
+    const deltaY = Number.isFinite(step.deltaY) ? Number(step.deltaY) : step.direction === "up"
+      ? -Math.abs(step.amount ?? DEFAULT_WHEEL_DELTA)
+      : Math.abs(step.amount ?? DEFAULT_WHEEL_DELTA);
+
+    const { webContents } = this.browserView;
+    webContents.focus();
+    const usedCdp = await this.sendCdpMouseWheel(point.x, point.y, deltaX, deltaY);
+    if (!usedCdp) {
+      webContents.sendInputEvent({ type: "mouseWheel", x: point.x, y: point.y, deltaX, deltaY, canScroll: true });
+    }
+    await this.waitForActionSettled();
+    await this.snapshot("run");
+    return {
+      ...this.resultFromResolvedTarget(base, resolved),
+      ok: true,
+      strategy: `${resolved.actualStrategy}+${usedCdp ? "cdp-wheel" : "electron-wheel"}`,
+      interaction: {
+        action: "wheel",
+        ref: resolved.ref,
+        query: resolved.query,
+        strategy: usedCdp ? "cdp-wheel" : "electron-wheel",
+        bounds: resolved.bounds,
+        x: point.x,
+        y: point.y,
+      },
+    };
+  }
+
+  private async performRunHoverStep(
+    base: BrowserRunStepResult,
+    step: BrowserRunStep,
+    target: BrowserTargetDescriptor | undefined,
+    strategy: BrowserActionStrategy,
+    goal?: string,
+  ): Promise<BrowserRunStepResult> {
+    if (!this.browserView) throw new Error("Browser runtime is not available.");
+    const resolved = await this.resolveTarget(this.buildRunResolutionTarget(step, target, goal), "hover", strategy, step.minConfidence);
+    const point = resolved.point
+      || (resolved.bounds ? buildPointFromBounds(resolved.bounds, resolved.target?.relativePosition) : undefined);
+    if (!point) {
+      return this.resultFromResolvedTarget(base, resolved, resolved.warning || "No browser point could be resolved for hover.");
+    }
+    const { webContents } = this.browserView;
+    webContents.focus();
+    const usedCdp = await this.sendCdpMouseMove(point.x, point.y);
+    if (!usedCdp) {
+      webContents.sendInputEvent({ type: "mouseMove", x: point.x, y: point.y, movementX: 0, movementY: 0 });
+    }
+    await delay(50);
+    await this.waitForDomSettled(400, 120);
+    await this.snapshot("run");
+    return {
+      ...this.resultFromResolvedTarget(base, resolved),
+      ok: true,
+      strategy: `${resolved.actualStrategy}+${usedCdp ? "cdp-hover" : "electron-hover"}`,
+      interaction: {
+        action: "hover",
+        ref: resolved.ref,
+        query: resolved.query,
+        strategy: usedCdp ? "cdp-hover" : "electron-hover",
+        bounds: resolved.bounds,
+        x: point.x,
+        y: point.y,
+      },
+    };
+  }
+
+  private async performRunDragStep(
+    base: BrowserRunStepResult,
+    step: BrowserRunStep,
+    target: BrowserTargetDescriptor | undefined,
+    strategy: BrowserActionStrategy,
+    goal?: string,
+  ): Promise<BrowserRunStepResult> {
+    if (!this.browserView) throw new Error("Browser runtime is not available.");
+    const resolved = await this.resolveTarget(this.buildRunResolutionTarget(step, target, goal), "drag", strategy, step.minConfidence);
+    const start = resolved.point
+      || (resolved.bounds ? buildPointFromBounds(resolved.bounds, resolved.target?.relativePosition) : undefined);
+    if (!start) {
+      return this.resultFromResolvedTarget(base, resolved, resolved.warning || "No browser point could be resolved for drag.");
+    }
+    if (!Number.isFinite(step.deltaX) && !Number.isFinite(step.deltaY)) {
+      return this.resultFromResolvedTarget(base, resolved, "Drag step requires deltaX or deltaY.");
+    }
+    const end = {
+      x: Math.round(start.x + Number(step.deltaX ?? 0)),
+      y: Math.round(start.y + Number(step.deltaY ?? 0)),
+    };
+    const { webContents } = this.browserView;
+    webContents.focus();
+    const usedCdp = await this.sendCdpMouseDrag(start, end);
+    if (!usedCdp) {
+      webContents.sendInputEvent({ type: "mouseMove", x: start.x, y: start.y, movementX: 0, movementY: 0 });
+      webContents.sendInputEvent({ type: "mouseDown", x: start.x, y: start.y, button: "left", clickCount: 1 });
+      await delay(35);
+      webContents.sendInputEvent({ type: "mouseMove", x: end.x, y: end.y, movementX: end.x - start.x, movementY: end.y - start.y });
+      await delay(35);
+      webContents.sendInputEvent({ type: "mouseUp", x: end.x, y: end.y, button: "left", clickCount: 1 });
+    }
+    await this.waitForActionSettled();
+    await this.snapshot("run");
+    return {
+      ...this.resultFromResolvedTarget(base, resolved),
+      ok: true,
+      strategy: `${resolved.actualStrategy}+${usedCdp ? "cdp-drag" : "electron-drag"}`,
+      interaction: {
+        action: "drag",
+        ref: resolved.ref,
+        query: resolved.query,
+        strategy: usedCdp ? "cdp-drag" : "electron-drag",
+        bounds: resolved.bounds,
+        x: end.x,
+        y: end.y,
+      },
+    };
+  }
+
+  private async performRunKeyStep(base: BrowserRunStepResult, step: BrowserRunStep): Promise<BrowserRunStepResult> {
+    if (!this.browserView) throw new Error("Browser runtime is not available.");
+    const key = String(step.key ?? "").trim();
+    if (!key) {
+      return { ...base, error: "Key step requires key." };
+    }
+    const { webContents } = this.browserView;
+    webContents.focus();
+    webContents.sendInputEvent({ type: "keyDown", keyCode: key });
+    if (key.length === 1) {
+      webContents.sendInputEvent({ type: "char", keyCode: key });
+    }
+    webContents.sendInputEvent({ type: "keyUp", keyCode: key });
+    await this.waitForActionSettled();
+    await this.snapshot("run");
+    return {
+      ...base,
+      ok: true,
+      strategy: "keyboard",
+      interaction: {
+        action: "key",
+        strategy: "keyboard",
+      },
+    };
+  }
+
   private async resolve(request: BrowserActionRequest): Promise<BrowserActionResponse> {
-    const query = request.query?.trim() || request.text?.trim() || "";
+    const query = buildTargetQuery(request.target);
     if (!query) throw new Error("browser_action.resolve requires query.");
     await this.snapshot("resolve");
     const result = await this.buildResolveResult(query, {
-      role: request.role,
+      role: request.target?.role,
       limit: request.limit,
       minConfidence: request.minConfidence,
       action: "resolve",
@@ -1371,32 +2386,6 @@ export class BrowserManager {
     this.state = { ...this.state, resolve: result, lastAction: "resolve", error: undefined };
     this.emit();
     return { ok: true, ...this.getState(), resolve: result };
-  }
-
-  private async resolveRefForAction(
-    query: string,
-    action: "click" | "type",
-    minConfidence?: number,
-  ): Promise<{ ref?: string; resolve: BrowserResolveResult }> {
-    await this.snapshot("resolve");
-    const result = await this.buildResolveResult(query, {
-      action,
-      role: action === "type" ? "textbox" : "button",
-      minConfidence: minConfidence ?? DIRECT_ACTION_MIN_CONFIDENCE,
-      requireEditable: action === "type",
-    });
-    return { ref: result.selectedRef, resolve: result };
-  }
-
-  private blockedResolveResponse(resolve: BrowserResolveResult, message: string): BrowserActionResponse {
-    this.state = {
-      ...this.state,
-      resolve,
-      error: message,
-      lastAction: "resolve",
-    };
-    this.emit();
-    return { ok: false, ...this.getState(), resolve };
   }
 
   private async navigate(url?: string): Promise<BrowserActionResponse> {
@@ -1407,43 +2396,30 @@ export class BrowserManager {
     return this.snapshot("navigate");
   }
 
-  private async click(ref?: string, query?: string, minConfidence?: number): Promise<BrowserActionResponse> {
+  private async click(
+    target: BrowserTargetDescriptor | undefined,
+    strategy: BrowserActionStrategy,
+    minConfidence?: number,
+  ): Promise<BrowserActionResponse> {
     if (!this.browserView) throw new Error("Browser runtime is not available.");
-    let resolveResult: BrowserResolveResult | undefined;
-    if (!ref?.trim() && query?.trim()) {
-      const resolved = await this.resolveRefForAction(query, "click", minConfidence);
-      resolveResult = resolved.resolve;
-      if (!resolved.ref) {
-        return this.blockedResolveResponse(
-          resolveResult,
-          resolveResult.strictActionMismatch
-            ? "DOM resolver refused to click because the best candidate is only semantically related and does not contain the requested action text."
-            : "DOM resolver could not choose a unique high-confidence element to click.",
-        );
-      }
-      ref = resolved.ref;
+    if (!target) {
+      throw new Error("browser_action.click requires target.");
     }
-    const previousUrl = this.browserView.webContents.getURL();
-    const key = String(ref ?? "").trim();
-    const selector = this.elementSelectors.get(key);
-    if (!selector) throw new Error(refError(key));
-    const script = browserScript("click", { ref: key, selector });
-    const result = await this.browserView.webContents.executeJavaScript(script, true) as BrowserClickScriptResult;
-    if (!result?.ok) throw new Error(result?.error || refError(key));
-    const interaction = await this.sendMouseClickAt(result.bounds);
-    this.recentInteractionRef = key;
-    await this.waitForActionSettled(previousUrl);
+    const result = await this.performRunClickStep(
+      { index: 0, op: "click", ok: false, strategy: "" },
+      { op: "click", target, strategy, minConfidence },
+      target,
+      strategy,
+      undefined,
+    );
+    if (!result.ok) {
+      if (!result.resolve) throw new Error(result.error || "Click failed.");
+      this.state = { ...this.state, resolve: result.resolve, error: result.error, lastAction: "click" };
+      this.emit();
+      return { ok: false, ...this.getState(), resolve: result.resolve };
+    }
     const response = await this.snapshot("click");
-    const clickInteraction = {
-      ...interaction,
-      action: "click" as const,
-      ref: key,
-      query,
-      bounds: result.bounds,
-    };
-    return resolveResult
-      ? { ...response, resolve: resolveResult, interaction: clickInteraction }
-      : { ...response, interaction: clickInteraction };
+    return { ...response, resolve: result.resolve, interaction: result.interaction };
   }
 
   private async sendMouseClickAt(bounds?: BrowserBounds): Promise<Omit<BrowserInteractionResult, "action">> {
@@ -1453,11 +2429,16 @@ export class BrowserManager {
     }
     const x = Math.round(bounds.x + bounds.width / 2);
     const y = Math.round(bounds.y + bounds.height / 2);
+    return this.sendMouseClickPoint(x, y, bounds);
+  }
+
+  private async sendMouseClickPoint(x: number, y: number, bounds?: BrowserBounds): Promise<Omit<BrowserInteractionResult, "action">> {
+    if (!this.browserView) throw new Error("Browser runtime is not available.");
     const { webContents } = this.browserView;
 
     webContents.focus();
     if (await this.sendCdpMouseClick(x, y)) {
-      return { strategy: "cdp", x, y };
+      return { strategy: "cdp", x, y, bounds };
     }
 
     const viewBounds = this.browserView.getBounds();
@@ -1468,7 +2449,7 @@ export class BrowserManager {
     webContents.sendInputEvent({ type: "mouseDown", x: fallbackX, y: fallbackY, button: "left", clickCount: 1 });
     await delay(35);
     webContents.sendInputEvent({ type: "mouseUp", x: fallbackX, y: fallbackY, button: "left", clickCount: 1 });
-    return { strategy: "electron-input", x, y, fallbackX, fallbackY };
+    return { strategy: "electron-input", x, y, fallbackX, fallbackY, bounds };
   }
 
   private async sendCdpMouseClick(x: number, y: number) {
@@ -1523,30 +2504,153 @@ export class BrowserManager {
     }
   }
 
-  private async type(ref?: string, query?: string, text = "", submit = false, minConfidence?: number): Promise<BrowserActionResponse> {
-    if (!this.browserView) throw new Error("Browser runtime is not available.");
-    let resolveResult: BrowserResolveResult | undefined;
-    if (!ref?.trim() && query?.trim()) {
-      const resolved = await this.resolveRefForAction(query, "type", minConfidence);
-      resolveResult = resolved.resolve;
-      if (!resolved.ref) {
-        return this.blockedResolveResponse(
-          resolveResult,
-          "DOM resolver could not choose a unique high-confidence editable element to type into.",
-        );
+  private async sendCdpMouseMove(x: number, y: number, buttons = 0) {
+    if (!this.browserView) return false;
+    const { debugger: cdp } = this.browserView.webContents;
+    const wasAttached = cdp.isAttached();
+    try {
+      if (!wasAttached) cdp.attach("1.3");
+      await cdp.sendCommand("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x,
+        y,
+        button: "none",
+        buttons,
+        modifiers: 0,
+        timestamp: Date.now() / 1000,
+      });
+      return true;
+    } catch (error) {
+      serverLog(`[browser] CDP mouse move failed; falling back to Electron input: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    } finally {
+      if (!wasAttached && cdp.isAttached()) {
+        try {
+          cdp.detach();
+        } catch {
+          // no-op
+        }
       }
-      ref = resolved.ref;
     }
-    const previousUrl = this.browserView.webContents.getURL();
-    const key = String(ref ?? "").trim();
-    const selector = this.elementSelectors.get(key);
-    const script = browserScript("type", { ref: key, selector, text, submit });
-    const result = await this.browserView.webContents.executeJavaScript(script, true) as { ok?: boolean; error?: string };
-    if (!result?.ok) throw new Error(result?.error || refError(key));
-    this.recentInteractionRef = selector ? key : "";
-    await this.waitForActionSettled(previousUrl);
+  }
+
+  private async sendCdpMouseWheel(x: number, y: number, deltaX: number, deltaY: number) {
+    if (!this.browserView) return false;
+    const { debugger: cdp } = this.browserView.webContents;
+    const wasAttached = cdp.isAttached();
+    try {
+      if (!wasAttached) cdp.attach("1.3");
+      await cdp.sendCommand("Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x,
+        y,
+        button: "none",
+        buttons: 0,
+        modifiers: 0,
+        deltaX,
+        deltaY,
+        timestamp: Date.now() / 1000,
+      });
+      return true;
+    } catch (error) {
+      serverLog(`[browser] CDP mouse wheel failed; falling back to Electron input: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    } finally {
+      if (!wasAttached && cdp.isAttached()) {
+        try {
+          cdp.detach();
+        } catch {
+          // no-op
+        }
+      }
+    }
+  }
+
+  private async sendCdpMouseDrag(start: BrowserPoint, end: BrowserPoint) {
+    if (!this.browserView) return false;
+    const { debugger: cdp } = this.browserView.webContents;
+    const wasAttached = cdp.isAttached();
+    try {
+      if (!wasAttached) cdp.attach("1.3");
+      const timestamp = () => Date.now() / 1000;
+      await cdp.sendCommand("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: start.x,
+        y: start.y,
+        button: "none",
+        buttons: 0,
+        modifiers: 0,
+        timestamp: timestamp(),
+      });
+      await cdp.sendCommand("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: start.x,
+        y: start.y,
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+        modifiers: 0,
+        timestamp: timestamp(),
+      });
+      await delay(35);
+      await cdp.sendCommand("Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x: end.x,
+        y: end.y,
+        button: "left",
+        buttons: 1,
+        modifiers: 0,
+        timestamp: timestamp(),
+      });
+      await delay(35);
+      await cdp.sendCommand("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: end.x,
+        y: end.y,
+        button: "left",
+        buttons: 0,
+        clickCount: 1,
+        modifiers: 0,
+        timestamp: timestamp(),
+      });
+      return true;
+    } catch (error) {
+      serverLog(`[browser] CDP drag failed; falling back to Electron input: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    } finally {
+      if (!wasAttached && cdp.isAttached()) {
+        try {
+          cdp.detach();
+        } catch {
+          // no-op
+        }
+      }
+    }
+  }
+
+  private async type(
+    target: BrowserTargetDescriptor | undefined,
+    strategy: BrowserActionStrategy,
+    text = "",
+    submit = false,
+    minConfidence?: number,
+  ): Promise<BrowserActionResponse> {
+    if (!this.browserView) throw new Error("Browser runtime is not available.");
+    const result = await this.performRunTypeStep(
+      { index: 0, op: "type", ok: false, strategy: "" },
+      { op: "type", target, strategy, text, submit, minConfidence },
+      target,
+      strategy,
+      undefined,
+    );
+    if (!result.ok) {
+      if (!result.resolve) throw new Error(result.error || "Typing failed.");
+      this.state = { ...this.state, resolve: result.resolve, error: result.error, lastAction: "type" };
+      this.emit();
+      return { ok: false, ...this.getState(), resolve: result.resolve };
+    }
     const response = await this.snapshot("type");
-    return resolveResult ? { ...response, resolve: resolveResult } : response;
+    return { ...response, resolve: result.resolve, interaction: result.interaction };
   }
 
   private async scroll(direction: "up" | "down" | "left" | "right", amount?: number): Promise<BrowserActionResponse> {

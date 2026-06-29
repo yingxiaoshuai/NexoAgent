@@ -112,6 +112,7 @@ export type BrowserAction =
   | "click"
   | "type"
   | "scroll"
+  | "run"
   | "screenshot"
   | "refresh"
   | "back"
@@ -122,6 +123,25 @@ export interface BrowserBounds {
   y: number;
   width: number;
   height: number;
+}
+
+export interface BrowserRelativePosition {
+  xRatio: number;
+  yRatio: number;
+}
+
+export interface BrowserTargetDescriptor {
+  ref?: string;
+  query?: string;
+  role?: string;
+  text?: string;
+  selector?: string;
+  xpath?: string;
+  placeholder?: string;
+  ariaLabel?: string;
+  nearText?: string;
+  bounds?: BrowserBounds;
+  relativePosition?: BrowserRelativePosition;
 }
 
 export interface BrowserElementSnapshot {
@@ -178,6 +198,95 @@ export interface BrowserResolveResult {
   minConfidence: number;
 }
 
+export type BrowserRunOperation =
+  | "navigate"
+  | "resolve"
+  | "click"
+  | "type"
+  | "key"
+  | "scroll"
+  | "wheel"
+  | "hover"
+  | "drag"
+  | "wait"
+  | "screenshot"
+  | "back"
+  | "forward"
+  | "refresh";
+
+export type BrowserActionStrategy =
+  | "auto"
+  | "dom"
+  | "semantic"
+  | "css"
+  | "xpath"
+  | "cdp"
+  | "coordinate"
+  | "visionFallback";
+
+export type BrowserRunFailureAction =
+  | "snapshot"
+  | "resolve"
+  | "scroll"
+  | "return-candidates";
+
+export interface BrowserRunFailurePolicy {
+  retry?: BrowserRunFailureAction[];
+  maxAttempts?: number;
+  direction?: "up" | "down" | "left" | "right";
+  amount?: number;
+  continueOnError?: boolean;
+}
+
+export interface BrowserRunStep {
+  op: BrowserRunOperation;
+  target?: BrowserTargetDescriptor;
+  strategy?: BrowserActionStrategy;
+  onFailure?: BrowserRunFailurePolicy;
+  url?: string;
+  text?: string;
+  key?: string;
+  submit?: boolean;
+  direction?: "up" | "down" | "left" | "right";
+  amount?: number;
+  deltaX?: number;
+  deltaY?: number;
+  waitMs?: number;
+  durationMs?: number;
+  minConfidence?: number;
+}
+
+export interface BrowserRunStepResult {
+  index: number;
+  op: BrowserRunOperation;
+  ok: boolean;
+  strategy: string;
+  target?: BrowserTargetDescriptor;
+  selectedRef?: string;
+  selectedBounds?: BrowserBounds;
+  confidence?: number;
+  semanticReady?: boolean;
+  semanticPending?: boolean;
+  semanticError?: string;
+  resolve?: BrowserResolveResult;
+  interaction?: BrowserInteractionResult;
+  artifact?: BrowserArtifact;
+  retries?: BrowserRunFailureAction[];
+  warning?: string;
+  error?: string;
+}
+
+export interface BrowserRunTrace {
+  goal?: string;
+  strategy?: BrowserActionStrategy;
+  onFailure?: BrowserRunFailurePolicy;
+  steps: BrowserRunStepResult[];
+  completedSteps: number;
+  totalSteps: number;
+  finalUrl: string;
+  finalTitle: string;
+}
+
 export interface BrowserState {
   url: string;
   title: string;
@@ -212,7 +321,7 @@ export interface BrowserArtifact {
 }
 
 export interface BrowserInteractionResult {
-  action: BrowserAction;
+  action: BrowserAction | BrowserRunOperation;
   ref?: string;
   query?: string;
   strategy?: string;
@@ -247,13 +356,20 @@ export interface BrowserElementPickResult {
 export interface BrowserActionRequest {
   action: BrowserAction;
   url?: string;
-  ref?: string;
-  query?: string;
-  role?: string;
   text?: string;
+  goal?: string;
+  target?: BrowserTargetDescriptor;
+  steps?: BrowserRunStep[];
+  strategy?: BrowserActionStrategy;
+  onFailure?: BrowserRunFailurePolicy;
+  key?: string;
   submit?: boolean;
   direction?: "up" | "down" | "left" | "right";
   amount?: number;
+  deltaX?: number;
+  deltaY?: number;
+  waitMs?: number;
+  durationMs?: number;
   limit?: number;
   minConfidence?: number;
 }
@@ -262,6 +378,7 @@ export interface BrowserActionResponse extends BrowserState {
   ok: boolean;
   artifact?: BrowserArtifact;
   interaction?: BrowserInteractionResult;
+  run?: BrowserRunTrace;
 }
 
 export type ChatRole = "system" | "user" | "assistant";

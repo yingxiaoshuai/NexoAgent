@@ -206,6 +206,7 @@ export default function BrowserWorkbench() {
         display: "grid",
         gridTemplateColumns: `minmax(0, 1fr) ${CONTROL_RAIL_WIDTH}px ${conversationWidth}px`,
         height: "100%",
+        minHeight: 0,
         background: colors.bgPrimary,
         position: "relative",
         overflow: "hidden",

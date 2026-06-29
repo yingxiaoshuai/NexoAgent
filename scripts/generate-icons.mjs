@@ -1,24 +1,23 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { Resvg } from "@resvg/resvg-js";
 import pngToIco from "png-to-ico";
+import sharp from "sharp";
 
 const rootDir = process.cwd();
 const assetsDir = path.join(rootDir, "assets");
-const svgPath = path.join(assetsDir, "nexoagent-icon.svg");
-const svgMarkup = await fs.readFile(svgPath, "utf8");
+const sourcePath = path.join(assetsDir, "nexoagent-logo-source.png");
 
 const pngSizes = [1024, 512, 256, 128, 64, 48, 32, 16];
 const icoSizes = new Set([256, 128, 64, 48, 32, 16]);
 const icoSources = [];
+const crop = { left: 202, top: 0, width: 850, height: 850 };
 
 for (const size of pngSizes) {
-  const renderer = new Resvg(svgMarkup, {
-    fitTo: { mode: "width", value: size },
-    background: "rgba(0,0,0,0)"
-  });
-
-  const pngData = renderer.render().asPng();
+  const pngData = await sharp(sourcePath)
+    .extract(crop)
+    .resize(size, size, { fit: "contain" })
+    .png()
+    .toBuffer();
   const outputPath = path.join(assetsDir, `nexoagent-icon-${size}.png`);
   await fs.writeFile(outputPath, pngData);
   console.log(`wrote ${path.relative(rootDir, outputPath)}`);

@@ -197,25 +197,163 @@
       "name": "browser_action",
       "label": "Browser Action",
       "group": "extension",
-      "description": "Operate the shared Electron browser session for conversational web browsing and web app control. Use only when the task explicitly involves navigating a website, checking a page, or interacting with a web app in the current conversation. Do not present it as a standalone feature, and do not use it for general HTTP requests, web search, file access, or credentialless automation. For buttons, links, inputs, menus, and form submission, prefer snapshot or resolve elements and click/type returned refs before considering screenshots or vision. Use action=resolve with query for fuzzy control names; the browser-only DOM resolver uses local all-MiniLM-L6-v2 semantic matching plus DOM rules. Do not use shell commands, PowerShell, or OS-level mouse/keyboard automation to operate ordinary browser UI controls. When visual state matters or the user asks to see the current page, call action=screenshot so the runtime can attach the screenshot to the assistant response. Before typing sensitive data or submitting forms, confirm the user intends that action. Always snapshot or resolve first when you need fresh element references.",
+      "description": "Operate the shared Electron browser session for conversational web browsing and web app control. Use only when the task explicitly involves navigating a website, checking a page, or interacting with a web app in the current conversation. Do not present it as a standalone feature, and do not use it for general HTTP requests, web search, file access, or credentialless automation. Fixed actions such as snapshot, resolve, navigate, click, type, scroll, screenshot, refresh, back, and forward remain available for simple tasks. For compound or fuzzy browser tasks, use action=run with goal, target, steps, strategy, and onFailure so the browser runtime can resolve natural-language targets through DOM descriptors, local all-MiniLM-L6-v2 semantic matching, DOM rules, and CDP-backed input events. Do not use shell commands, PowerShell, or OS-level mouse/keyboard automation to operate ordinary browser UI controls. When visual state matters or the user asks to see the current page, call action=screenshot so the runtime can attach the screenshot to the assistant response. Before typing sensitive data or submitting forms, confirm the user intends that action.",
       "parameters": {
         "type": "object",
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["snapshot", "resolve", "navigate", "click", "type", "scroll", "screenshot", "refresh", "back", "forward"]
+            "enum": ["snapshot", "resolve", "navigate", "click", "type", "scroll", "run", "screenshot", "refresh", "back", "forward"]
           },
           "url": { "type": "string" },
-          "ref": { "type": "string", "description": "Element ref returned by the latest snapshot or browser action result. Use this for click/type." },
-          "query": { "type": "string", "description": "Natural-language element query for action=resolve, or for click/type when ref is not available." },
-          "role": { "type": "string", "description": "Optional role hint for resolve, such as button, link, or textbox." },
           "text": { "type": "string", "description": "Text to type for action=type." },
+          "goal": { "type": "string", "description": "High-level objective for action=run." },
+          "target": {
+            "type": "object",
+            "description": "Target descriptor for click/type/resolve, or the default target for action=run.",
+            "properties": {
+              "ref": { "type": "string" },
+              "query": { "type": "string" },
+              "role": { "type": "string" },
+              "text": { "type": "string" },
+              "selector": { "type": "string" },
+              "xpath": { "type": "string" },
+              "placeholder": { "type": "string" },
+              "ariaLabel": { "type": "string" },
+              "nearText": { "type": "string" },
+              "bounds": {
+                "type": "object",
+                "properties": {
+                  "x": { "type": "number" },
+                  "y": { "type": "number" },
+                  "width": { "type": "number" },
+                  "height": { "type": "number" }
+                }
+              },
+              "relativePosition": {
+                "type": "object",
+                "properties": {
+                  "xRatio": { "type": "number" },
+                  "yRatio": { "type": "number" }
+                }
+              }
+            }
+          },
+          "steps": {
+            "type": "array",
+            "description": "Ordered multi-step browser operations for action=run.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "op": {
+                  "type": "string",
+                  "enum": ["navigate", "resolve", "click", "type", "key", "scroll", "wheel", "hover", "drag", "wait", "screenshot", "back", "forward", "refresh"]
+                },
+                "target": {
+                  "type": "object",
+                  "properties": {
+                    "ref": { "type": "string" },
+                    "query": { "type": "string" },
+                    "role": { "type": "string" },
+                    "text": { "type": "string" },
+                    "selector": { "type": "string" },
+                    "xpath": { "type": "string" },
+                    "placeholder": { "type": "string" },
+                    "ariaLabel": { "type": "string" },
+                    "nearText": { "type": "string" },
+                    "bounds": {
+                      "type": "object",
+                      "properties": {
+                        "x": { "type": "number" },
+                        "y": { "type": "number" },
+                        "width": { "type": "number" },
+                        "height": { "type": "number" }
+                      }
+                    },
+                    "relativePosition": {
+                      "type": "object",
+                      "properties": {
+                        "xRatio": { "type": "number" },
+                        "yRatio": { "type": "number" }
+                      }
+                    }
+                  }
+                },
+                "strategy": {
+                  "type": "string",
+                  "enum": ["auto", "dom", "semantic", "css", "xpath", "cdp", "coordinate", "visionFallback"]
+                },
+                "onFailure": {
+                  "type": "object",
+                  "properties": {
+                    "retry": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["snapshot", "resolve", "scroll", "return-candidates"]
+                      }
+                    },
+                    "maxAttempts": { "type": "number" },
+                    "direction": {
+                      "type": "string",
+                      "enum": ["up", "down", "left", "right"]
+                    },
+                    "amount": { "type": "number" },
+                    "continueOnError": { "type": "boolean" }
+                  }
+                },
+                "url": { "type": "string" },
+                "text": { "type": "string" },
+                "key": { "type": "string" },
+                "submit": { "type": "boolean" },
+                "direction": {
+                  "type": "string",
+                  "enum": ["up", "down", "left", "right"]
+                },
+                "amount": { "type": "number" },
+                "deltaX": { "type": "number" },
+                "deltaY": { "type": "number" },
+                "waitMs": { "type": "number" },
+                "durationMs": { "type": "number" },
+                "minConfidence": { "type": "number" }
+              },
+              "required": ["op"]
+            }
+          },
+          "strategy": {
+            "type": "string",
+            "enum": ["auto", "dom", "semantic", "css", "xpath", "cdp", "coordinate", "visionFallback"]
+          },
+          "onFailure": {
+            "type": "object",
+            "properties": {
+              "retry": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["snapshot", "resolve", "scroll", "return-candidates"]
+                }
+              },
+              "maxAttempts": { "type": "number" },
+              "direction": {
+                "type": "string",
+                "enum": ["up", "down", "left", "right"]
+              },
+              "amount": { "type": "number" },
+              "continueOnError": { "type": "boolean" }
+            }
+          },
+          "key": { "type": "string", "description": "Keyboard key for action=run steps with op=key." },
           "submit": { "type": "boolean" },
           "direction": {
             "type": "string",
             "enum": ["up", "down", "left", "right"]
           },
           "amount": { "type": "number" },
+          "deltaX": { "type": "number" },
+          "deltaY": { "type": "number" },
+          "waitMs": { "type": "number" },
+          "durationMs": { "type": "number" },
           "limit": { "type": "number", "description": "Maximum resolve candidates to return." },
           "minConfidence": { "type": "number", "description": "Minimum resolver confidence for query-based click/type." }
         },

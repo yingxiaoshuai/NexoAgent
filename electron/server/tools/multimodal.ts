@@ -76,6 +76,31 @@ function formatArtifacts(title: string, artifacts: ArtifactResult[], extraLines:
   ].join("\n");
 }
 
+export function extractArtifactsFromToolOutput(output: string): ArtifactResult[] {
+  const artifacts: ArtifactResult[] = [];
+  const seen = new Set<string>();
+  const lineRe = /^\d+\.\s+(.+?)\s+\((.+?),\s+(\d+)\s+bytes\):\s+(\/uploads\/\S+)$/;
+
+  for (const rawLine of output.split(/\r?\n/)) {
+    const match = rawLine.trim().match(lineRe);
+    if (!match) continue;
+    const [, name, mimeType, sizeText, url] = match;
+    if (seen.has(url)) continue;
+    seen.add(url);
+    artifacts.push({
+      url,
+      name,
+      type: mimeType.startsWith("audio/") ? "audio" : mimeType.startsWith("image/") ? "image" : "file",
+      mimeType,
+      size: Number(sizeText) || 0,
+      source: "generated",
+      path: url,
+    });
+  }
+
+  return artifacts;
+}
+
 export async function analyzeImage(args: Record<string, unknown>, ctx: ToolExecutionContext) {
   const prompt = getStringArg(args, "prompt");
   const images = readStringList(args.images ?? args.image ?? args.imageUrl ?? args.image_url);

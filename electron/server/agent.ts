@@ -22,6 +22,7 @@ import { getWebSettings } from "./settings";
 import { getEnabledSkillInstructions } from "./skills";
 import { computePromptBudget, estimateMessagesTokens, estimateSectionTokens, estimateTokens, trimSectionsToBudget, truncateTextToTokenBudget } from "./token-budget";
 import { getAllEnabledToolDefs, toLcTool } from "./tools/registry";
+import { extractArtifactsFromToolOutput } from "./tools/multimodal";
 import type { ChatAttachment, Session, StreamEvent, ToolDef, ToolExecutionContext } from "./types";
 import { decodeHtml, parseToolArgs, toErrorMessage } from "./utils";
 import { getWorkspaceRoot } from "./workspace";
@@ -78,10 +79,11 @@ function buildBrowserSurfacePrompt(surface: ConversationSurface) {
     "- Use browser_action for interactive web browsing, page inspection, and web app operation in the shared browser session.",
     "- When the user refers to the current page, this page, what is on screen, or a website already opened in the shared browser, use browser_action against that shared session.",
     "- Do not use browser_action as a generic HTTP client, crawler, search API, or file access tool.",
-    "- For normal page controls such as buttons, links, inputs, menus, and form submission, use the elements returned by the latest browser_action result first. If a needed control is not present, refs may be stale, or the user names it fuzzily, call action=resolve with a concise query and then click/type the returned ref.",
-    "- The browser DOM resolver is browser-only and uses local all-MiniLM-L6-v2 semantic matching fused with DOM rules. Prefer it for fuzzy control descriptions instead of screenshot or vision.",
+    "- Fixed browser_action actions such as snapshot, resolve, navigate, click, type, scroll, screenshot, back, and forward remain available for simple or explicit page operations.",
+    "- For compound or fuzzy browser tasks, prefer browser_action with action=\"run\" and write the goal, target, steps, strategy, and onFailure yourself so the browser runtime can resolve targets and execute the sequence inside one tool call.",
+    "- The browser DOM resolver is browser-only and uses local all-MiniLM-L6-v2 semantic matching fused with DOM rules. It is used for browser DOM target resolution only, not for memory, knowledge retrieval, or general question answering.",
     "- Do not use screenshots, vision models, shell_command, PowerShell, or OS-level mouse/keyboard automation to locate or operate ordinary DOM controls when browser_action elements/refs can do it.",
-    "- Before click/type when element refs are stale or unknown, call browser_action with action=snapshot or action=resolve.",
+    "- Use screenshot or explicit vision fallback only when the user asks to see the page, visual state matters, strategy requests visionFallback, or DOM evidence is insufficient.",
     "- After click/type/navigation, treat URL, loading, navigation flags, title, text, and elements together as the page state. If navigation changed but text looks transitional, sparse, or stale, do not claim the action failed; request a fresh snapshot or continue from the updated URL.",
     "- Before typing passwords, tokens, payment data, or other sensitive values, confirm that the user explicitly requested that exact action.",
   ];
@@ -98,7 +100,7 @@ function buildBrowserSurfacePrompt(surface: ConversationSurface) {
     "Visible-browser posture:",
     "- The conversation is embedded beside a browser page that the user can see.",
     "- Act as a browser co-pilot and page operator: prefer direct action on the visible current page for navigation, clicking, typing, searching, form work, comparison, and inspection tasks.",
-    "- When asked to press a visible labeled or fuzzily described control such as Send, Submit, Search, Save, or Next, look for the matching element name/text in the browser_action elements list or call action=resolve, then click its ref. Screenshot-based visual localization is a fallback only after DOM resolver refs fail.",
+    "- When asked to press or type into a visible labeled or fuzzily described control such as Send, Submit, Search, Save, Next, or Subject, you may use browser_action action=\"run\" so the browser runtime resolves and executes the step without manually chaining snapshot, resolve, and ref reuse.",
     "- Keep narration short around obvious page actions. After acting, say what changed, what you found, or what input you need next.",
     "- Use screenshots only when the user asks to capture/show/send the page, visual evidence must be preserved in the conversation, or the state cannot be conveyed reliably from the text snapshot.",
     "- If the user says to continue, click, type, search, go back, inspect, or otherwise refers to the visible page, treat the current browser state as primary context.",
@@ -143,10 +145,11 @@ function withSettingsAwareToolDefs(tools: ToolDef[], settings: AgentSettings): T
           "Use only for interactive browser navigation, page inspection, and web app control inside the current conversation.",
           "The browser session is shared with the conversation UI; do not present it as a separate standalone product feature.",
           "Do not use it as a general HTTP request tool, search tool, or file access tool.",
-          "For buttons, links, inputs, menus, and form submission, prefer snapshot or resolve elements and click/type returned refs before considering screenshots or vision.",
-          "Use action=resolve with query for fuzzy control names; the browser-only resolver uses local all-MiniLM-L6-v2 semantic matching plus DOM rules and does not affect memory or knowledge retrieval.",
+          "Fixed actions still work for simple page operations, but action=\"run\" is preferred for compound or fuzzy browser tasks.",
+          "Use action=\"run\" with goal, target, steps, strategy, and onFailure when you want the browser runtime to resolve natural-language targets through DOM descriptors, local all-MiniLM-L6-v2 semantic matching, DOM rules, and CDP-backed input events.",
+          "MiniLM is browser-only and is used only for DOM target resolution; it does not affect memory or knowledge retrieval.",
           "Do not use shell commands, PowerShell, or OS-level mouse/keyboard automation to operate ordinary browser UI controls.",
-          "When visual state matters or the user asks to see the current page, call action=screenshot; screenshot artifacts are attached to the assistant response automatically.",
+          "When visual state matters or the user asks to see the current page, call action=screenshot; screenshot artifacts are attached to the assistant response automatically. Vision fallback is allowed only when DOM evidence is insufficient or strategy explicitly asks for it.",
           "Before typing passwords, tokens, or other sensitive values, make sure the user explicitly asked for that action.",
           "If the element reference is stale, request a fresh snapshot before retrying.",
         ].join(" "),
@@ -363,6 +366,27 @@ function browserScreenshotAttachmentFromToolResult(
   }
 }
 
+function generatedAttachmentsFromToolResult(
+  name: string,
+  args: Record<string, unknown>,
+  output: string,
+): ChatAttachment[] {
+  if (name !== "invoke_model") return [];
+  const capability = String(args.capability ?? "").toLowerCase();
+  if (capability !== "image_generation" && capability !== "image_editing" && capability !== "text_to_speech") {
+    return [];
+  }
+
+  return extractArtifactsFromToolOutput(output).map((artifact) => ({
+    url: artifact.url,
+    name: artifact.name,
+    type: artifact.type,
+    mimeType: artifact.mimeType,
+    size: artifact.size,
+    source: "generated",
+  }));
+}
+
 function textFromUnknown(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return "";
@@ -422,8 +446,8 @@ function browserDomFirstRedirect(
     const query = inferResolveQuery(combined);
     return [
       "DOM-first guard: screenshot is not allowed yet for ordinary browser control localization.",
-      `Call browser_action with action="resolve", query="${query}", and role="button" or the appropriate role, then click/type the returned ref.`,
-      "Use screenshot or vision only after resolve returns low confidence/needsDisambiguation, or for image/canvas/chart/layout tasks.",
+      `Call browser_action with action="run", goal="operate the requested browser control", steps=[{ op:"click", target:{ query:"${query}", role:"button" }, strategy:"auto" }] or the matching type step instead.`,
+      "Use screenshot or vision only after DOM resolution returns weak evidence, strategy explicitly requests visionFallback, or for image/canvas/chart/layout tasks.",
     ].join(" ");
   }
 
@@ -431,8 +455,8 @@ function browserDomFirstRedirect(
     const query = inferResolveQuery(combined);
     return [
       "DOM-first guard: vision model calls are not allowed yet for ordinary browser control localization.",
-      `Call browser_action with action="resolve", query="${query}", and role="button" or the appropriate role, then click/type the returned ref.`,
-      "Use vision only after resolve fails or for genuinely visual content such as images, canvas, charts, or layout inspection.",
+      `Call browser_action with action="run", goal="operate the requested browser control", steps=[{ op:"click", target:{ query:"${query}", role:"button" }, strategy:"auto" }] or the matching type step instead.`,
+      "Use vision only after DOM evidence is insufficient or for genuinely visual content such as images, canvas, charts, or layout inspection.",
     ].join(" ");
   }
 
@@ -1016,6 +1040,9 @@ export async function streamFromLLM(
           assistantAttachments,
           browserScreenshotAttachmentFromToolResult(tc.name, parsedArgs, String(output)),
         );
+        for (const attachment of generatedAttachmentsFromToolResult(tc.name, parsedArgs, String(output))) {
+          appendUniqueAttachment(assistantAttachments, attachment);
+        }
 
         pushEvent(requestId, { type: "tool_result", id: tc.id, output: String(output), elapsed });
         circuitBreaker?.recordToolResult({

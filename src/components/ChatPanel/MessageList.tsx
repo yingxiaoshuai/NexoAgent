@@ -15,6 +15,7 @@ export const MessageList: React.FC<Props> = ({ onSuggest, hasInput }) => {
   const { messages, streaming, toolCalls, messageBlocks, undoableMessageIds, undoAssistantMessage } = useChatStore();
   const { colors } = useTheme();
   const { t } = useI18n();
+  const containerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastScrollAtRef = useRef(0);
@@ -23,7 +24,12 @@ export const MessageList: React.FC<Props> = ({ onSuggest, hasInput }) => {
     const scrollToBottom = () => {
       scrollTimerRef.current = null;
       lastScrollAtRef.current = Date.now();
-      bottomRef.current?.scrollIntoView({ behavior: streaming ? "auto" : "smooth", block: "end" });
+      const container = containerRef.current;
+      if (!container) return;
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: streaming ? "auto" : "smooth",
+      });
     };
 
     if (!streaming) {
@@ -105,7 +111,7 @@ export const MessageList: React.FC<Props> = ({ onSuggest, hasInput }) => {
   }
 
   return (
-    <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
+    <div ref={containerRef} style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
       {messages.map((message, index) => {
         const undoable = undoableMessageIds.has(message.id);
         return (

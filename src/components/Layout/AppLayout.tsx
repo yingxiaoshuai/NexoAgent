@@ -35,7 +35,7 @@ import { useI18n } from "../../i18n";
 import { getApiBase, isElectron } from "../../services/api";
 
 const { Content, Sider } = Layout;
-const brandIconUrl = new URL("../../../assets/nexoagent-icon.svg", import.meta.url).href;
+const brandIconUrl = new URL("../../../assets/nexoagent-icon-32.png", import.meta.url).href;
 const DESKTOP_DRAG_BAR_HEIGHT = 44;
 const COLLAPSED_SESSION_SIDER_WIDTH = 60;
 const MIN_SESSION_SIDER_WIDTH = 220;
@@ -413,7 +413,7 @@ export const AppLayout: React.FC = () => {
         </>
       )}
 
-      <Content style={{ display: "flex", flexDirection: "column", overflow: "auto", background: colors.bgPrimary }}>
+      <Content style={{ display: "flex", flexDirection: "column", overflow: "hidden", background: colors.bgPrimary }}>
         {view === "chat" && <ChatPanel />}
         {view === "browser" && <BrowserWorkbench />}
         {view === "memory" && <MemoryPanel />}

@@ -11,6 +11,7 @@ The project is built with Electron, React, TypeScript, Ant Design, Express, and 
 - Multi-session chat: create, switch, rename, delete, persist, and stream conversations.
 - OpenAI-compatible models: configure API Base URL, API Key, model, temperature, planning mode, context turns, max tool steps, and optional context-budget overrides.
 - Tool calling: use LangChain tool calling for search, HTTP requests, model sub-calls, calculation, file read/write, memory recall, skill search/install, and shell commands.
+- Shared browser workbench: operate a conversation-scoped Electron browser with visible browsing, hidden background browsing, DOM-first element resolution, screenshots, element picking, history, zoom, and web-app automation.
 - Local memory: store persistent `daily`, `dream`, and `script` memories in SQLite, with embedding-backed semantic recall when available.
 - Dream memory: consolidate daily memories into reusable dream records for cross-session context.
 - Local knowledge base: create, edit, delete, browse, preview, and retrieve Markdown documents with Chroma-backed semantic recall when embeddings are available.
@@ -129,6 +130,7 @@ The repository includes a GitHub Actions workflow at `.github/workflows/build-re
 | State management | Zustand |
 | Build tool | Vite 6 |
 | Agent orchestration | LangChain, OpenAI-compatible Chat API |
+| Browser automation | Electron BrowserView, Chrome DevTools Protocol input events, local MiniLM element resolver |
 | Backend service | Express, Server-Sent Events |
 | Local storage | JSON files, SQLite/sql.js |
 | Memory retrieval | OpenAI Embeddings, Chroma, SQLite keyword fallback |
@@ -145,13 +147,15 @@ nexoAgent/
 │   ├── preload.ts                # Electron preload bridge
 │   └── server/
 │       ├── agent.ts              # LangChain Agent loop, tool calls, context assembly
+│       ├── browser-manager.ts    # Shared browser, DOM snapshots, CDP clicks, element picker
+│       ├── browser-embedding.ts  # Browser-only MiniLM element resolver
 │       ├── routes/               # settings/chat/session/memory/knowledge/tools APIs
 │       ├── tools/                # Tool executors and registry
 │       ├── skills.ts             # Skill loading, toggles, marketplace installs
 │       ├── knowledge.ts          # Local knowledge-base loading and retrieval
 │       └── tasks.ts              # Scheduled task runtime
 ├── src/
-│   ├── components/               # Chat, Memory, Knowledge, Tools, Skills, Tasks UI
+│   ├── components/               # Chat, BrowserWorkbench, Memory, Knowledge, Tools, Skills, Tasks UI
 │   ├── services/api.ts           # Electron IPC and Web fetch API adapter
 │   ├── store/chat.ts             # Sessions, message stream, tool-call state
 │   ├── shared/                   # Shared types, settings, and port constants
@@ -182,8 +186,90 @@ Built-in tools are declared in `nexo/tools.json`, and their executors live in `e
 | `install_skill` | Install a skill from a supported marketplace |
 | `create_scheduled_task` | Create a scheduled task that appears in the Tasks panel and runs through Nexo's scheduler |
 | `shell_command` | Run a terminal command from the workspace |
+| `browser_action` | Operate the shared Electron browser session through DOM snapshots, semantic element resolution, `action="run"` multi-step execution, CDP clicks, typing, scrolling, screenshots, refresh, back, and forward |
 
 File tools are restricted to the configured workspace and extra file access roots. Add external directories in Settings before using `file_read` or `file_write` against them, or handle the path through a terminal command.
+
+## Browser Workbench
+
+The desktop app includes a conversation-scoped shared browser. It is not a separate product surface; it is a browser component used by the current chat so the assistant can inspect pages, operate web apps, gather visual evidence, and bring the result back into the conversation.
+
+### Surfaces
+
+- Visible browser mode: the browser is shown beside the chat panel. The left side contains the web page, the center rail contains zoom controls and the split resize handle, and the right side contains session history plus the conversation.
+- Hidden browser mode: the same browser session can be kept offscreen for chat-only workflows. The assistant can browse in the background and summarize results without asking the user to watch the page.
+- Screenshot return: `browser_action.screenshot` creates an image artifact and attaches it to the assistant response when visual state, layout, charts, images, or user-requested evidence matter.
+
+### DOM-first Operation
+
+Browser automation is DOM-first. For ordinary controls such as buttons, links, inputs, menus, and form submission, the assistant should prefer DOM target resolution instead of screenshot-based visual localization. Fixed actions like `snapshot`, `resolve`, `click`, `type`, and `scroll` remain available for simple tasks, and their locators should be expressed through `target`, while `browser_action` with `action="run"` is preferred for compound or fuzzy browser tasks.
+
+The resolver extracts visible interactive elements from the current page, including:
+
+- Native `button`, `a`, `input`, `textarea`, `select`, and `summary` elements
+- ARIA controls such as `role="button"`, `role="link"`, menu items, checkboxes, and radios
+- Contenteditable regions
+- Clickable-looking `div` or `span` elements with `cursor:pointer`, click handlers, or common button/action class/id/data attributes
+
+Each candidate keeps its role, name, text, value, href, editability, bounds, nearby context, selector, and a descriptor string used for matching.
+
+### `browser_action.run`
+
+`action="run"` lets the model send a browser goal, a default target, an ordered `steps` array, an optional `strategy`, and `onFailure` guidance in one tool call. The browser runtime then resolves natural-language targets through DOM descriptors, local MiniLM semantic matching, DOM rules, selectors, xpath, or explicit coordinates before executing each step.
+
+Example:
+
+```json
+{
+  "action": "run",
+  "goal": "Compose and send a test email",
+  "steps": [
+    { "op": "click", "target": { "query": "Compose", "role": "button" } },
+    { "op": "type", "target": { "query": "Recipient" }, "text": "test@example.com" },
+    { "op": "type", "target": { "query": "Subject" }, "text": "Smoke test" },
+    { "op": "click", "target": { "query": "Send", "role": "button" }, "strategy": "auto" }
+  ],
+  "onFailure": { "retry": ["snapshot", "resolve", "scroll"] }
+}
+```
+
+### Browser-only MiniLM Resolver
+
+`electron/server/browser-embedding.ts` loads a local `Xenova/all-MiniLM-L6-v2` model from `nexo/models/browser-resolver/`. It is used only for browser element resolution. It is not used for persistent memory, knowledge retrieval, daily memory, dream memory, or conversation compaction.
+
+The resolver combines:
+
+- Lexical and exact-name matching
+- Role matching
+- Nearby context and recent interaction context
+- Enabled/visible state checks
+- Local MiniLM semantic similarity for fuzzy element names
+
+For explicit high-impact actions such as send, delete, save, login, and cancel, semantic similarity alone is not enough. The chosen element must contain the requested action anchor, preventing mistakes such as treating "compose" as "send" just because both are mail-related.
+
+### CDP Input Events
+
+Clicks are executed through Chrome DevTools Protocol when possible. Nexo first resolves a `target` through `target.ref`, `target.query`, selector/xpath, or explicit coordinates, then sends:
+
+```text
+Input.dispatchMouseEvent(mouseMoved)
+Input.dispatchMouseEvent(mousePressed)
+Input.dispatchMouseEvent(mouseReleased)
+```
+
+The CDP events include `buttons`, `modifiers`, and second-based `timestamp` values, and they travel through Chromium's native input pipeline. This is more reliable for modern SPAs than calling `HTMLElement.click()`.
+
+Typing supports `target.ref` and `target.query`, and it also falls back to the focused editable element. If a SPA rerenders and a previous ref becomes stale after the field has already been focused, `browser_action.type` and `browser_action.run` type steps can still write into `document.activeElement`.
+
+### Element Picker
+
+The browser toolbar includes an element picker button. When enabled, the page highlights hovered elements. The next click is captured before the page handles it, and the selected element's name, tag, role, text, selector, bounds, and URL are written into the chat input. This is useful when a user wants to point at a page element and ask the assistant to reason about it.
+
+### Boundaries
+
+- DOM-first does not mean vision is never used. Screenshots remain the right fallback for canvas content, charts, images, layout inspection, and cases where the user explicitly wants visual evidence. `browser_action.run` may also request `strategy: "visionFallback"` when DOM evidence is weak.
+- Cross-origin iframe internals, browser plugins, canvas-only UI, and sites with strong anti-automation behavior may still require screenshots, user confirmation, or site-specific adaptation.
+- The browser resolver's MiniLM model is scoped to browser parsing only and should not be reused as a memory or knowledge embedding model.
 
 ## Memory
 

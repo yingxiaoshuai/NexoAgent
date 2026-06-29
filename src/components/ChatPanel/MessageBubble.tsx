@@ -3,8 +3,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { Avatar, Button, Popconfirm, Tag, Tooltip } from "antd";
-import { FileOutlined, RobotOutlined, SoundOutlined, UndoOutlined, UserOutlined } from "@ant-design/icons";
-import type { ChatMessage } from "../../shared/types";
+import { DownloadOutlined, FileOutlined, RobotOutlined, SoundOutlined, UndoOutlined, UserOutlined } from "@ant-design/icons";
+import type { Attachment, ChatMessage } from "../../shared/types";
 import { ToolCallItem } from "./ToolCallSteps";
 import type { ToolCallEvent } from "./ToolCallSteps";
 import type { MessageBlock } from "../../store/chat";
@@ -89,6 +89,118 @@ function extractUploadArtifacts(content: string) {
     });
 }
 
+function buildAttachmentHref(apiBase: string, attachment: Pick<Attachment, "url">) {
+  return /^https?:\/\//i.test(attachment.url) ? attachment.url : `${apiBase}${attachment.url}`;
+}
+
+function buildAttachmentDownloadHref(apiBase: string, attachment: Pick<Attachment, "url" | "name">) {
+  if (/^https?:\/\//i.test(attachment.url)) return attachment.url;
+  return `${apiBase}/api/uploads/download?url=${encodeURIComponent(attachment.url)}&name=${encodeURIComponent(attachment.name)}`;
+}
+
+function AttachmentActions({
+  href,
+  downloadHref,
+  colors,
+  t,
+}: {
+  href: string;
+  downloadHref: string;
+  colors: ThemeColors;
+  t: ReturnType<typeof useI18n>["t"];
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
+      <a href={href} target="_blank" rel="noreferrer" style={{ color: colors.textMuted, fontSize: 12 }}>
+        {t("openAttachment")}
+      </a>
+      <a
+        href={downloadHref}
+        download
+        style={{ color: colors.textMuted, fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4 }}
+      >
+        <DownloadOutlined />
+        {t("downloadAttachment")}
+      </a>
+    </div>
+  );
+}
+
+function AttachmentCard({
+  attachment,
+  apiBase,
+  colors,
+  t,
+}: {
+  attachment: Attachment;
+  apiBase: string;
+  colors: ThemeColors;
+  t: ReturnType<typeof useI18n>["t"];
+}) {
+  const href = buildAttachmentHref(apiBase, attachment);
+  const downloadHref = buildAttachmentDownloadHref(apiBase, attachment);
+
+  if (attachment.type === "image") {
+    return (
+      <div style={{ marginBottom: 8 }}>
+        <img
+          src={href}
+          alt={attachment.name}
+          style={{ maxWidth: 280, borderRadius: 8, display: "block", cursor: "pointer", border: `1px solid ${colors.border}` }}
+          onClick={() => window.open(href)}
+        />
+        <AttachmentActions href={href} downloadHref={downloadHref} colors={colors} t={t} />
+      </div>
+    );
+  }
+
+  if (attachment.type === "audio") {
+    return (
+      <div
+        style={{
+          background: colors.bgTertiary,
+          border: `1px solid ${colors.borderStrong}`,
+          padding: 8,
+          borderRadius: 8,
+          marginBottom: 8,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, color: colors.textMuted }}>
+          <SoundOutlined />
+          <a href={href} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>
+            {attachment.name}
+          </a>
+        </div>
+        <audio controls src={href} style={{ width: "100%" }} />
+        <AttachmentActions href={href} downloadHref={downloadHref} colors={colors} t={t} />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        background: colors.bgTertiary,
+        border: `1px solid ${colors.borderStrong}`,
+        padding: 8,
+        borderRadius: 8,
+        marginBottom: 8,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+      }}
+    >
+      <FileOutlined style={{ color: colors.textMuted }} />
+      <div>
+        <a href={href} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>
+          {attachment.name}
+        </a>
+        <AttachmentActions href={href} downloadHref={downloadHref} colors={colors} t={t} />
+      </div>
+    </div>
+  );
+}
+
 function getMessageStatusMeta(status: ChatMessage["status"], t: ReturnType<typeof useI18n>["t"]) {
   switch (status) {
     case "undone":
@@ -112,7 +224,23 @@ const MessageBubbleComponent: React.FC<Props> = ({ message, streaming, toolCalls
   const hasBlocks = !isUser && Boolean(blocks?.length);
   const apiBase = getApiBase();
   const safeContent = useMemo(() => (!isUser ? stripDsmlArtifacts(message.content) : message.content), [isUser, message.content]);
-  const generatedArtifacts = useMemo(() => (!isUser ? extractUploadArtifacts(safeContent) : []), [isUser, safeContent]);
+  const normalizedAttachments = useMemo(() => {
+    const explicit = message.attachments ?? [];
+    if (isUser) return explicit;
+
+    const byUrl = new Map(explicit.map((attachment) => [attachment.url, attachment]));
+    for (const artifact of extractUploadArtifacts(safeContent)) {
+      if (!byUrl.has(artifact.url)) {
+        byUrl.set(artifact.url, {
+          url: artifact.url,
+          name: artifact.name,
+          type: artifact.type === "audio" ? "audio" : "image",
+          source: "generated",
+        });
+      }
+    }
+    return [...byUrl.values()];
+  }, [isUser, message.attachments, safeContent]);
   const statusMeta = !isUser ? getMessageStatusMeta(message.status, t) : null;
   const isUndone = message.status === "undone";
 
@@ -132,55 +260,15 @@ const MessageBubbleComponent: React.FC<Props> = ({ message, streaming, toolCalls
         size={32}
       />
       <div style={{ maxWidth: "80%", minWidth: 0 }}>
-        {message.attachments?.map((attachment, index) =>
-          attachment.type === "image" ? (
-            <img
-              key={index}
-              src={apiBase + attachment.url}
-              alt={attachment.name}
-              style={{ maxWidth: 200, borderRadius: 8, marginBottom: 6, display: "block", cursor: "pointer" }}
-              onClick={() => window.open(apiBase + attachment.url)}
-            />
-          ) : attachment.type === "audio" ? (
-            <div
-              key={index}
-              style={{
-                background: colors.bgTertiary,
-                border: `1px solid ${colors.borderStrong}`,
-                padding: 8,
-                borderRadius: 8,
-                marginBottom: 6,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, color: colors.textMuted }}>
-                <SoundOutlined />
-                <a href={apiBase + attachment.url} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>
-                  {attachment.name}
-                </a>
-              </div>
-              <audio controls src={apiBase + attachment.url} style={{ width: "100%" }} />
-            </div>
-          ) : (
-            <div
-              key={index}
-              style={{
-                background: colors.bgTertiary,
-                border: `1px solid ${colors.borderStrong}`,
-                padding: 8,
-                borderRadius: 8,
-                marginBottom: 6,
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-              }}
-            >
-              <FileOutlined style={{ color: colors.textMuted }} />
-              <a href={apiBase + attachment.url} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>
-                {attachment.name}
-              </a>
-            </div>
-          ),
-        )}
+        {normalizedAttachments.map((attachment, index) => (
+          <AttachmentCard
+            key={`${attachment.url}-${index}`}
+            attachment={attachment}
+            apiBase={apiBase}
+            colors={colors}
+            t={t}
+          />
+        ))}
         <div
           style={{
             background: isUndone ? colors.bgTertiary : (isUser ? colors.bubbleUser : colors.bubbleAssistant),
@@ -219,39 +307,6 @@ const MessageBubbleComponent: React.FC<Props> = ({ message, streaming, toolCalls
             <MarkdownText content={safeContent} streaming={streaming} colors={colors} />
           )}
         </div>
-        {generatedArtifacts.length > 0 ? (
-          <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-            {generatedArtifacts.map((artifact) =>
-              artifact.type === "image" ? (
-                <img
-                  key={artifact.url}
-                  src={apiBase + artifact.url}
-                  alt={artifact.name}
-                  style={{ maxWidth: 280, borderRadius: 8, border: `1px solid ${colors.border}`, cursor: "pointer" }}
-                  onClick={() => window.open(apiBase + artifact.url)}
-                />
-              ) : (
-                <div
-                  key={artifact.url}
-                  style={{
-                    background: colors.bgTertiary,
-                    border: `1px solid ${colors.borderStrong}`,
-                    padding: 8,
-                    borderRadius: 8,
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                    <SoundOutlined style={{ color: colors.textMuted }} />
-                    <a href={apiBase + artifact.url} target="_blank" rel="noreferrer" style={{ color: colors.textMuted }}>
-                      {artifact.name}
-                    </a>
-                  </div>
-                  <audio controls src={apiBase + artifact.url} style={{ width: "100%" }} />
-                </div>
-              ),
-            )}
-          </div>
-        ) : null}
         <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           {statusMeta ? <Tag color={statusMeta.color}>{statusMeta.label}</Tag> : null}
           {!isUser && isUndone && message.meta?.undoneMessage ? (

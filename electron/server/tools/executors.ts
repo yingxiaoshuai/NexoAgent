@@ -8,6 +8,18 @@ import { runShellCommand } from "./shell-command";
 
 export type ToolExecutor = (args: Record<string, unknown>, ctx: ToolExecutionContext) => Promise<string>;
 
+function readObjectArg<T extends Record<string, unknown>>(args: Record<string, unknown>, key: string): T | undefined {
+  const value = args[key];
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as T
+    : undefined;
+}
+
+function readArrayArg<T>(args: Record<string, unknown>, key: string): T[] | undefined {
+  const value = args[key];
+  return Array.isArray(value) ? value as T[] : undefined;
+}
+
 function readMemoryKinds(value: unknown): MemoryKind[] | undefined {
   const raw = Array.isArray(value)
     ? value
@@ -47,22 +59,55 @@ function formatBrowserResult(result: Awaited<ReturnType<typeof browserManager.ex
   return JSON.stringify(result, null, 2);
 }
 
+function hasOwnValue(args: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(args, key) && args[key] !== undefined;
+}
+
+function rejectLegacyBrowserActionArgs(args: Record<string, unknown>) {
+  const legacyRootFields = ["ref", "query", "role", "bounds", "relativePosition"].filter((key) => hasOwnValue(args, key));
+  if (legacyRootFields.length) {
+    throw new Error(
+      `browser_action no longer accepts top-level ${legacyRootFields.join(", ")}. Put locators and coordinates under target instead.`,
+    );
+  }
+
+  const steps = Array.isArray(args.steps) ? args.steps : [];
+  const legacyStepIndex = steps.findIndex((step) => {
+    if (!step || typeof step !== "object" || Array.isArray(step)) return false;
+    const record = step as Record<string, unknown>;
+    return hasOwnValue(record, "ref") || hasOwnValue(record, "query") || hasOwnValue(record, "role");
+  });
+  if (legacyStepIndex >= 0) {
+    throw new Error(
+      `browser_action.run steps no longer accept ref/query/role at the step root. Move them under steps[${legacyStepIndex}].target instead.`,
+    );
+  }
+}
+
 export const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
   invoke_model: async (args, ctx) => invokeModel(args, ctx),
   shell_command: async (args, ctx) => runShellCommand(args, ctx),
   browser_action: async (args) => {
+    rejectLegacyBrowserActionArgs(args);
     const limit = args.limit === undefined ? undefined : getOptionalNumberArg(args, "limit", 5);
     const minConfidence = args.minConfidence === undefined ? undefined : getOptionalNumberArg(args, "minConfidence", 0.82);
     const result = await browserManager.executeAction({
       action: getStringArg(args, "action") as Parameters<typeof browserManager.executeAction>[0]["action"],
       url: getOptionalStringArg(args, "url"),
-      ref: getOptionalStringArg(args, "ref"),
-      query: getOptionalStringArg(args, "query"),
-      role: getOptionalStringArg(args, "role"),
       text: getOptionalStringArg(args, "text"),
+      goal: getOptionalStringArg(args, "goal"),
+      target: readObjectArg(args, "target"),
+      steps: readArrayArg(args, "steps"),
+      strategy: getOptionalStringArg(args, "strategy") as Parameters<typeof browserManager.executeAction>[0]["strategy"],
+      onFailure: readObjectArg(args, "onFailure"),
+      key: getOptionalStringArg(args, "key"),
       submit: Boolean(args.submit),
       direction: getOptionalStringArg(args, "direction", "down") as "up" | "down" | "left" | "right",
       amount: getOptionalNumberArg(args, "amount", 720),
+      deltaX: args.deltaX === undefined ? undefined : getOptionalNumberArg(args, "deltaX", 0),
+      deltaY: args.deltaY === undefined ? undefined : getOptionalNumberArg(args, "deltaY", 0),
+      waitMs: args.waitMs === undefined ? undefined : getOptionalNumberArg(args, "waitMs", 0),
+      durationMs: args.durationMs === undefined ? undefined : getOptionalNumberArg(args, "durationMs", 0),
       limit,
       minConfidence,
     });
