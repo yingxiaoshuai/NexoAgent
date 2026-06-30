@@ -30,4 +30,5 @@ export interface DesktopApi {
   browserAction?: (request: BrowserActionRequest) => Promise<BrowserActionResponse>;
   pickBrowserElement?: () => Promise<BrowserElementPickResult>;
   onBrowserStateChange?: (listener: (state: BrowserState) => void) => () => void;
+  onTaskSessionRequested?: (listener: (sessionId: string) => void) => () => void;
 }

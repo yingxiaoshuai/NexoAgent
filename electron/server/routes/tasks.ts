@@ -36,10 +36,15 @@ export function registerTaskRoutes(app: Application, ctx: ServerContext) {
     await ensureTasksLoaded();
     const t = taskStore.find((x) => x.id === req.params.id);
     if (!t) return res.status(404).json({ error: "not found" });
-    void executeTask(t, ctx.getStoredApiKey).catch((error) =>
-      serverLog(`ERROR Manual task failed: ${t.name}: ${toErrorMessage(error)}`)
-    );
-    return res.json({ ok: true });
+    try {
+      const result = await executeTask(t, ctx.getStoredApiKey);
+      ctx.onTaskFinished?.(result, { origin: "manual" });
+      return res.json({ ok: true, ...result });
+    } catch (error) {
+      const message = toErrorMessage(error);
+      serverLog(`ERROR Manual task failed: ${t.name}: ${message}`);
+      return res.status(500).json({ error: message });
+    }
   });
 
   app.delete("/api/tasks/:id", async (req, res) => {

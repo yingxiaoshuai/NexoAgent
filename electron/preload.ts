@@ -45,6 +45,17 @@ const desktopApi: DesktopApi = {
       ipcRenderer.removeListener(channel, wrapped);
     };
   },
+  onTaskSessionRequested: (listener) => {
+    const channel = "task:open-session";
+    const wrapped = (_event: unknown, payload: { sessionId?: string } | string) => {
+      const sessionId = typeof payload === "string" ? payload : payload?.sessionId;
+      if (sessionId) listener(sessionId);
+    };
+    ipcRenderer.on(channel, wrapped);
+    return () => {
+      ipcRenderer.removeListener(channel, wrapped);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld("nexoDesktop", desktopApi);

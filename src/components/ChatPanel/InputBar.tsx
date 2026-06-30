@@ -15,6 +15,7 @@ interface Props {
   onCancel?: () => void;
   fillValue?: { text: string; ts: number } | null;
   onValueChange?: (v: string) => void;
+  blockedMessage?: string;
 }
 
 export const InputBar: React.FC<Props> = ({
@@ -26,6 +27,7 @@ export const InputBar: React.FC<Props> = ({
   onCancel,
   fillValue,
   onValueChange,
+  blockedMessage,
 }) => {
   const [value, setValue] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -98,6 +100,21 @@ export const InputBar: React.FC<Props> = ({
 
   return (
     <div style={{ padding: "12px 24px 20px", borderTop: `1px solid ${colors.border}`, background: colors.bgSecondary }}>
+      {blockedMessage ? (
+        <div
+          style={{
+            marginBottom: 10,
+            padding: "10px 12px",
+            borderRadius: 12,
+            background: colors.bgTertiary,
+            border: `1px solid ${colors.border}`,
+            color: colors.textMuted,
+            fontSize: 12,
+          }}
+        >
+          {blockedMessage}
+        </div>
+      ) : null}
       {attachments.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
           {attachments.map((attachment, index) => (
@@ -158,7 +175,7 @@ export const InputBar: React.FC<Props> = ({
             }
           }}
           onPaste={handlePaste}
-          placeholder={t("typeMessage")}
+          placeholder={blockedMessage || t("typeMessage")}
           autoSize={{ minRows: 1, maxRows: 6 }}
           disabled={disabled && !onCancel}
           style={{ ...controlStyle, resize: "none" }}

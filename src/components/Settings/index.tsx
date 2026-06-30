@@ -264,7 +264,7 @@ const ApiKeyField: React.FC<{
 };
 
 export const Settings: React.FC = () => {
-  const { settings, loadSettings, saveSettings } = useChatStore();
+  const { settings, loadSettings, saveSettings, modelProfiles: profiles, loadModelProfiles } = useChatStore();
   const { colors } = useTheme();
   const { lang, t } = useI18n();
   const ui = useMemo(() => buildUi(lang), [lang]);
@@ -273,7 +273,6 @@ export const Settings: React.FC = () => {
   const [form] = Form.useForm<AgentSettings>();
   const [messageApi, ctx] = message.useMessage();
   const [formKey, setFormKey] = useState(0);
-  const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<ModelProfile | null>(null);
   const [profileForm] = Form.useForm<ModelProfile>();
@@ -333,14 +332,11 @@ export const Settings: React.FC = () => {
     });
   }, [settings, form]);
 
-  const loadProfiles = async () => {
-    const data = await apiGet<ModelProfile[]>("/api/model-profiles");
-    setProfiles(data);
-  };
-
   useEffect(() => {
-    void loadProfiles();
-  }, []);
+    void loadModelProfiles().catch((error) => {
+      console.warn("[settings] failed to load model profiles:", error);
+    });
+  }, [loadModelProfiles]);
 
   const inputStyle: React.CSSProperties = {
     background: colors.bgTertiary,
@@ -430,7 +426,7 @@ export const Settings: React.FC = () => {
 
   const saveProfile = async () => {
     const values = await profileForm.validateFields();
-    const saved = await apiPost<ModelProfile>("/api/model-profiles", {
+    await apiPost<ModelProfile>("/api/model-profiles", {
       ...editingProfile,
       ...values,
       providerName: normalizeServiceProviderName(values.providerName, String(values.apiBase ?? ""), values.providerId),
@@ -438,14 +434,7 @@ export const Settings: React.FC = () => {
       apiKey: values.apiKey === SAVED_API_KEY_MASK ? "" : values.apiKey,
       providerId: normalizeProviderId(values.providerId),
     });
-
-    setProfiles((current) => {
-      const normalized = current.map((profile) => (
-        saved.isPrimary && profile.id !== saved.id ? { ...profile, isPrimary: false } : profile
-      ));
-      const exists = normalized.some((profile) => profile.id === saved.id);
-      return exists ? normalized.map((profile) => (profile.id === saved.id ? saved : profile)) : [...normalized, saved];
-    });
+    await loadModelProfiles();
     setProfileModalOpen(false);
     setEditingProfile(null);
     profileForm.resetFields();
@@ -454,7 +443,7 @@ export const Settings: React.FC = () => {
 
   const deleteProfile = async (id: string) => {
     await apiDelete(`/api/model-profiles/${id}`);
-    setProfiles((current) => current.filter((profile) => profile.id !== id));
+    await loadModelProfiles();
     void messageApi.success(ui.profileDeleted);
   };
 
@@ -474,25 +463,22 @@ export const Settings: React.FC = () => {
     const nextCapabilities = isPrimary && !profile.capabilities?.includes("orchestration")
       ? [...(profile.capabilities ?? []), "orchestration" as ModelCapability]
       : profile.capabilities;
-    const saved = await apiPost<ModelProfile>("/api/model-profiles", {
+    await apiPost<ModelProfile>("/api/model-profiles", {
       ...profile,
       isPrimary,
       capabilities: nextCapabilities,
       apiKey: "",
     });
-    setProfiles((current) => current.map((item) => {
-      if (saved.isPrimary && item.id !== saved.id) return { ...item, isPrimary: false };
-      return item.id === saved.id ? saved : item;
-    }));
+    await loadModelProfiles();
   };
 
   const toggleProfileEnabled = async (profile: ModelProfile, enabled: boolean) => {
-    const saved = await apiPost<ModelProfile>("/api/model-profiles", {
+    await apiPost<ModelProfile>("/api/model-profiles", {
       ...profile,
       enabled,
       apiKey: "",
     });
-    setProfiles((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+    await loadModelProfiles();
   };
 
   const refreshProfileContext = async (profile: ModelProfile) => {
@@ -504,7 +490,7 @@ export const Settings: React.FC = () => {
     setRefreshingContextProfileId(profile.id);
     try {
       const saved = await apiPost<ModelProfile>(`/api/model-profiles/${profile.id}/refresh-context`, {});
-      setProfiles((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+      await loadModelProfiles();
       void messageApi.success(ui.refreshContextSuccess(getContextSourceMeta(saved, ui).label));
     } catch (error) {
       void messageApi.error(error instanceof Error ? error.message : ui.refreshContextFailed);
@@ -531,7 +517,18 @@ export const Settings: React.FC = () => {
   }, [profileModalOpen, watchedProviderId, watchedApiBase, watchedApiKey, watchedProviderName, editingProfile?.id, editingProfile?.hasApiKey, allowsEmptyProfileApiKey]);
 
   return (
-    <div style={{ padding: "28px 32px", maxWidth: 1100, color: colors.textPrimary }}>
+    <div
+      style={{
+        height: "100%",
+        minHeight: 0,
+        overflowY: "auto",
+        overflowX: "hidden",
+        padding: "28px 32px",
+        maxWidth: 1100,
+        color: colors.textPrimary,
+        boxSizing: "border-box",
+      }}
+    >
       {ctx}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, marginBottom: 16 }}>
         <div>

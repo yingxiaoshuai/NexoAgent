@@ -1,4 +1,4 @@
-import { app, BrowserWindow, globalShortcut, ipcMain, nativeTheme, shell, safeStorage } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain, nativeTheme, Notification, shell, safeStorage } from "electron";
 import fs from "node:fs/promises";
 import path from "node:path";
 import http from "node:http";
@@ -21,6 +21,7 @@ import type {
 } from "../src/shared/types";
 import { isPreservedApiKeyInput } from "../src/shared/settings";
 import type { DesktopThemeMode } from "../src/shared/desktop";
+import type { TaskExecutionResult } from "./server/tasks";
 
 interface StoredSettings extends Omit<AgentSettings, "apiKey" | "hasApiKey"> {
   encryptedApiKey?: string;
@@ -177,10 +178,59 @@ function applyDesktopTheme(themeMode: DesktopThemeMode) {
   mainWindow.setBackgroundColor(DESKTOP_THEME_BACKGROUNDS[themeMode]);
 }
 
+function openTaskSessionFromDesktop(sessionId: string) {
+  focusMainWindow();
+
+  const deliver = () => {
+    mainWindow?.webContents.send("task:open-session", { sessionId });
+  };
+
+  if (mainWindow?.webContents.isLoading()) {
+    mainWindow.webContents.once("did-finish-load", deliver);
+    return;
+  }
+
+  deliver();
+}
+
+function buildTaskNotificationBody(result: TaskExecutionResult) {
+  if (result.status === "failed") {
+    return result.assistantPreview || "The task failed. Click to open the task session.";
+  }
+  if (result.status === "needs_input") {
+    return result.assistantPreview || "The task needs follow-up. Click to open the task session.";
+  }
+  if (result.status === "interrupted") {
+    return result.assistantPreview || "The task was interrupted. Click to open the task session.";
+  }
+  return result.assistantPreview || "The task session is ready.";
+}
+
+function showTaskFinishedNotification(result: TaskExecutionResult) {
+  if (!Notification.isSupported()) return;
+
+  const notification = new Notification({
+    title: result.status === "failed" ? `Nexo Task Failed: ${result.taskName}` : `Nexo Task Ready: ${result.taskName}`,
+    body: buildTaskNotificationBody(result),
+    icon: windowIconPath(),
+    silent: false,
+  });
+  notification.on("click", () => {
+    openTaskSessionFromDesktop(result.sessionId);
+  });
+  notification.show();
+}
+
 async function startHttpServer() {
   await refreshCachedApiKey();
   await syncServerSettingsFromDisk();
-  const expressApp = createExpressApp(() => cachedApiKey);
+  const expressApp = createExpressApp(() => cachedApiKey, {
+    onTaskFinished: (result, meta) => {
+      if (meta.origin === "scheduler") {
+        showTaskFinishedNotification(result);
+      }
+    },
+  });
   const host = "0.0.0.0";
   const port = await findAvailablePort(9898, host);
   webServerPort = port;

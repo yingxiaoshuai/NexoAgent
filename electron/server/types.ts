@@ -78,6 +78,8 @@ export interface ScheduledTask {
   runAt?: string;
   createdAt: string;
   lastRun?: string;
+  lastRunStatus?: TurnCompletionStatus;
+  lastError?: string;
 }
 
 export type ChatAttachment = NonNullable<ChatMessage["attachments"]>[number];

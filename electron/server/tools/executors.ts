@@ -1,6 +1,7 @@
 import { isMemoryKind, recallMemory, storeScriptMemory, type MemoryKind } from "../../memory";
 import { browserManager } from "../browser-manager";
 import { resolveMemoryEmbeddingSettings } from "../memory-embedding";
+import { createScheduledTask } from "../task-store";
 import type { ToolExecutionContext } from "../types";
 import { getOptionalNumberArg, getOptionalStringArg, getStringArg } from "../utils";
 import { invokeModel } from "./model-call";
@@ -87,6 +88,18 @@ function rejectLegacyBrowserActionArgs(args: Record<string, unknown>) {
 export const TOOL_EXECUTORS: Record<string, ToolExecutor> = {
   invoke_model: async (args, ctx) => invokeModel(args, ctx),
   shell_command: async (args, ctx) => runShellCommand(args, ctx),
+  create_scheduled_task: async (args) => {
+    const task = await createScheduledTask(args);
+    return [
+      `Created scheduled task "${task.name}".`,
+      `id: ${task.id}`,
+      `cron: ${task.cron}`,
+      `enabled: ${task.enabled ? "true" : "false"}`,
+      `runOnce: ${task.runOnce ? "true" : "false"}`,
+      task.runAt ? `runAt: ${task.runAt}` : "",
+      `prompt: ${task.prompt}`,
+    ].filter(Boolean).join("\n");
+  },
   browser_action: async (args) => {
     rejectLegacyBrowserActionArgs(args);
     const limit = args.limit === undefined ? undefined : getOptionalNumberArg(args, "limit", 5);

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MessageList } from "./MessageList";
 import { InputBar } from "./InputBar";
+import { ModelOnboarding } from "./ModelOnboarding";
 import { uploadFiles } from "./upload";
 import { useChatStore } from "../../store/chat";
 import { useTheme } from "../../theme";
@@ -14,10 +15,19 @@ function hasDraggedFiles(dataTransfer?: DataTransfer | null) {
 interface ChatPanelProps {
   surface?: ConversationSurface;
   externalFillValue?: { text: string; ts: number } | null;
+  onOpenSettings?: () => void;
 }
 
-export const ChatPanel: React.FC<ChatPanelProps> = ({ surface = "chat", externalFillValue = null }) => {
-  const { streaming, sendMessage, cancelStream } = useChatStore();
+export const ChatPanel: React.FC<ChatPanelProps> = ({ surface = "chat", externalFillValue = null, onOpenSettings }) => {
+  const {
+    streaming,
+    sendMessage,
+    cancelStream,
+    settings,
+    modelProfiles,
+    modelProfilesLoaded,
+    loadModelProfiles,
+  } = useChatStore();
   const { colors, mode } = useTheme();
   const { t } = useI18n();
   const [fillValue, setFillValue] = useState<{ text: string; ts: number } | null>(null);
@@ -26,6 +36,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ surface = "chat", external
   const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
   const dragDepthRef = useRef(0);
+
+  const hasPrimaryOrchestrationModel = modelProfiles.some((profile) => (
+    profile.enabled
+    && profile.isPrimary
+    && Boolean(profile.capabilities?.includes("orchestration"))
+  ));
+  const waitingForProfileState = surface === "chat" && !modelProfilesLoaded;
+  const needsHomepageOnboarding = surface === "chat" && modelProfilesLoaded && !hasPrimaryOrchestrationModel;
+  const showHomepageOnboarding = waitingForProfileState || needsHomepageOnboarding;
 
   useEffect(() => {
     const preventWindowFileDrop = (event: DragEvent) => {
@@ -109,23 +128,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ surface = "chat", external
       onDragOver={handleDragOver}
       onDrop={(event) => { void handleDrop(event); }}
     >
-      <MessageList
-        onSuggest={(text) => setFillValue({ text, ts: Date.now() })}
-        hasInput={inputText.length > 0}
-      />
-      <InputBar
-        onSend={(content, messageAttachments) => {
-          void sendMessage(content, messageAttachments, { surface });
-          setAttachments([]);
-        }}
-        attachments={attachments}
-        onAttachmentsChange={setAttachments}
-        onUploadFiles={handleUploadFiles}
-        disabled={streaming || uploading}
-        onCancel={streaming ? cancelStream : undefined}
-        fillValue={fillValue}
-        onValueChange={setInputText}
-      />
+      {showHomepageOnboarding ? (
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <ModelOnboarding
+            loading={waitingForProfileState}
+            settings={settings}
+            onSuccess={async () => {
+              await loadModelProfiles();
+            }}
+            onOpenSettings={onOpenSettings}
+          />
+        </div>
+      ) : (
+        <>
+          <MessageList
+            onSuggest={(text) => setFillValue({ text, ts: Date.now() })}
+            hasInput={inputText.length > 0}
+          />
+          <InputBar
+            onSend={(content, messageAttachments) => {
+              void sendMessage(content, messageAttachments, { surface });
+              setAttachments([]);
+            }}
+            attachments={attachments}
+            onAttachmentsChange={setAttachments}
+            onUploadFiles={handleUploadFiles}
+            disabled={streaming || uploading}
+            onCancel={streaming ? cancelStream : undefined}
+            fillValue={fillValue}
+            onValueChange={setInputText}
+          />
+        </>
+      )}
 
       {dragActive && (
         <div

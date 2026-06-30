@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import { message as antdMessage } from "antd";
-import type { AgentSettings, Attachment as ChatAttachment, ChatMessage, ConversationSurface } from "../shared/types";
+import type { AgentSettings, Attachment as ChatAttachment, ChatMessage, ConversationSurface, ModelProfile } from "../shared/types";
 import { apiDelete, apiGet, apiPatch, apiPost, getRuntimeApiBase, setRuntimeApiBase, subscribeStream } from "../services/api";
 import { sanitizeApiKeyForSave } from "../shared/settings";
 import type { DesktopApi } from "../shared/desktop";
@@ -46,8 +46,12 @@ interface ChatStore {
   undoableMessageIds: Set<string>;
   streaming: boolean;
   settings: AgentSettings;
+  modelProfiles: ModelProfile[];
+  modelProfilesLoaded: boolean;
+  modelProfilesLoading: boolean;
   ensureRuntimeReady: () => Promise<void>;
   loadSessions: () => Promise<void>;
+  loadModelProfiles: () => Promise<ModelProfile[]>;
   newSession: () => Promise<void>;
   selectSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => Promise<void>;
@@ -183,6 +187,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     undoableMessageIds: new Set(),
     streaming: false,
     settings: defaultSettings,
+    modelProfiles: [],
+    modelProfilesLoaded: false,
+    modelProfilesLoading: false,
     cancelStream: () => {},
     undoAssistantMessage: async (messageId) => {
       const activeSessionId = get().activeSessionId;
@@ -214,6 +221,27 @@ export const useChatStore = create<ChatStore>((set, get) => {
       await ensureRuntimeReady();
       const sessions = await apiGet<SessionMeta[]>("/api/sessions");
       set({ sessions });
+    },
+
+    loadModelProfiles: async () => {
+      await ensureRuntimeReady();
+      set({ modelProfilesLoading: true });
+      try {
+        const profiles = await apiGet<ModelProfile[]>("/api/model-profiles");
+        set({
+          modelProfiles: profiles,
+          modelProfilesLoaded: true,
+          modelProfilesLoading: false,
+        });
+        return profiles;
+      } catch (error) {
+        set({
+          modelProfiles: [],
+          modelProfilesLoaded: true,
+          modelProfilesLoading: false,
+        });
+        throw error;
+      }
     },
 
     newSession: async () => {

@@ -183,7 +183,7 @@ Built-in tools are declared in `nexo/tools.json`, and their executors live in `e
 | `search_skills` | Search skill marketplaces or local skills |
 | `create_skill` | Create a managed local skill from conversation input |
 | `install_skill` | Install a skill from a supported marketplace |
-| `create_scheduled_task` | Create a scheduled task that appears in the Tasks panel and runs through Nexo's scheduler |
+| `create_scheduled_task` | Create a scheduled task that appears in the Tasks panel and runs through Nexo's scheduler; accepts `prompt` plus either `cron`, `runAt`, or `delayMinutes` |
 | `shell_command` | Run a terminal command from the workspace |
 | `browser_action` | Operate the shared Electron browser session through AX/ref snapshots, `action="run"` multi-step execution, Electron-side `action="script"` runtime scripts, CDP clicks, typing, scrolling, screenshots, refresh, back, and forward |
 

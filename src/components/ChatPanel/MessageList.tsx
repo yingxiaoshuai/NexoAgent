@@ -7,11 +7,12 @@ import { useI18n } from "../../i18n";
 interface Props {
   onSuggest: (text: string) => void;
   hasInput: boolean;
+  emptyState?: React.ReactNode;
 }
 
 const STREAM_SCROLL_THROTTLE_MS = 90;
 
-export const MessageList: React.FC<Props> = ({ onSuggest, hasInput }) => {
+export const MessageList: React.FC<Props> = ({ onSuggest, hasInput, emptyState }) => {
   const { messages, streaming, toolCalls, messageBlocks, undoableMessageIds, undoAssistantMessage } = useChatStore();
   const { colors } = useTheme();
   const { t } = useI18n();
@@ -60,6 +61,9 @@ export const MessageList: React.FC<Props> = ({ onSuggest, hasInput }) => {
   }, []);
 
   if (messages.length === 0) {
+    if (emptyState) {
+      return <div style={{ flex: 1, minHeight: 0 }}>{emptyState}</div>;
+    }
     return (
       <div
         style={{

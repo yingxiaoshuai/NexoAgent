@@ -5,17 +5,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { serverLog } from "./logger";
 import { registerRoutes } from "./routes";
-import { startTaskScheduler } from "./tasks";
+import { startTaskScheduler, type TaskExecutionOrigin, type TaskExecutionResult } from "./tasks";
 
 export { serverLog } from "./logger";
 export type { StreamEvent } from "./types";
 
-export function createExpressApp(getStoredApiKey: () => string): Application {
+interface ExpressAppOptions {
+  onTaskFinished?: (result: TaskExecutionResult, meta: { origin: TaskExecutionOrigin }) => void;
+}
+
+export function createExpressApp(getStoredApiKey: () => string, options: ExpressAppOptions = {}): Application {
   const app = express();
   app.use(cors());
   app.use(express.json());
   app.use(express.text({ type: ["text/*", "application/xml", "*/xml"] }));
-  startTaskScheduler(getStoredApiKey);
+  startTaskScheduler(getStoredApiKey, options.onTaskFinished);
 
   const distCandidates = [
     path.join(process.cwd(), "dist"),
@@ -25,7 +29,7 @@ export function createExpressApp(getStoredApiKey: () => string): Application {
   const distPath = distCandidates.find((candidate) => fs.existsSync(path.join(candidate, "index.html"))) ?? distCandidates[0];
   app.use(express.static(distPath));
 
-  const ctx = { getStoredApiKey, distPath };
+  const ctx = { getStoredApiKey, distPath, onTaskFinished: options.onTaskFinished };
   registerRoutes(app, ctx);
 
   app.get("*", (req, res) => {

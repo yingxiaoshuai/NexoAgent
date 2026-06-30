@@ -18,6 +18,9 @@ function formatSessionTitle(title: string, newChatLabel: string, tasksLabel: str
   if (title.startsWith("[\u4efb\u52a1] ")) {
     return `[${tasksLabel}] ${title.slice(5)}`;
   }
+  if (title.startsWith("[浠诲姟] ")) {
+    return `[${tasksLabel}] ${title.slice(6)}`;
+  }
   return title;
 }
 

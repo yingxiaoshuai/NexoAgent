@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Table, Button, Modal, Form, Input, Switch, Tag, message } from "antd";
+import { Table, Button, Modal, Form, Input, Switch, Tag, Tooltip, message } from "antd";
 import { PlusOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { apiGet, apiPost, apiDelete, apiPatch } from "../../services/api";
 import { useI18n } from "../../i18n";
 import { useTheme } from "../../theme";
 import { OverflowMenuButton } from "../Common/OverflowMenuButton";
+import type { TurnCompletionStatus } from "../../shared/types";
 
 interface Task {
   id: string;
@@ -14,15 +15,33 @@ interface Task {
   prompt: string;
   enabled: boolean;
   lastRun?: string;
+  lastRunStatus?: TurnCompletionStatus;
+  lastError?: string;
 }
 
-export default function Tasks() {
+interface TaskRunResponse {
+  ok: true;
+  taskId: string;
+  taskName: string;
+  sessionId: string;
+  sessionTitle: string;
+  status: TurnCompletionStatus;
+  finishedAt: string;
+  assistantPreview: string;
+}
+
+interface TasksProps {
+  onOpenTaskSession?: (sessionId: string) => Promise<void> | void;
+}
+
+export default function Tasks({ onOpenTaskSession }: TasksProps) {
   const { colors } = useTheme();
   const { lang, t } = useI18n();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Task | null>(null);
+  const [runningTaskId, setRunningTaskId] = useState("");
   const [form] = Form.useForm<Task>();
 
   const ui = useMemo(
@@ -34,13 +53,22 @@ export default function Tasks() {
       taskCreated: lang === "zh" ? "\u4efb\u52a1\u5df2\u521b\u5efa" : "Task created.",
       taskDeleted: lang === "zh" ? "\u4efb\u52a1\u5df2\u5220\u9664" : "Task deleted.",
       deleteConfirm: lang === "zh" ? "\u786e\u8ba4\u5220\u9664\u8fd9\u6761\u4efb\u52a1\uff1f" : "Delete this task?",
-      taskQueued: lang === "zh"
-        ? "\u4efb\u52a1\u5df2\u63d0\u4ea4\uff0c\u5b8c\u6210\u540e\u4f1a\u751f\u6210\u4e00\u6761\u4efb\u52a1\u4f1a\u8bdd\u3002"
-        : "Task submitted. A task session will appear when it finishes.",
+      taskRunning: lang === "zh" ? "\u4efb\u52a1\u6267\u884c\u4e2d..." : "Task is running...",
+      runningTask: lang === "zh" ? "\u6267\u884c\u4e2d" : "Running",
+      taskFinished: lang === "zh" ? "\u4efb\u52a1\u5df2\u5b8c\u6210\uff0c\u5df2\u6253\u5f00\u4efb\u52a1\u4f1a\u8bdd\u3002" : "Task completed and its session was opened.",
+      taskNeedsInput: lang === "zh" ? "\u4efb\u52a1\u9700\u8981\u7ee7\u7eed\u5904\u7406\uff0c\u5df2\u6253\u5f00\u4efb\u52a1\u4f1a\u8bdd\u3002" : "Task needs follow-up and its session was opened.",
+      taskInterrupted: lang === "zh" ? "\u4efb\u52a1\u5df2\u4e2d\u65ad\uff0c\u5df2\u6253\u5f00\u4efb\u52a1\u4f1a\u8bdd\u3002" : "Task was interrupted and its session was opened.",
+      taskFailed: lang === "zh" ? "\u4efb\u52a1\u6267\u884c\u5931\u8d25\uff0c\u5df2\u6253\u5f00\u4efb\u52a1\u4f1a\u8bdd\u67e5\u770b\u539f\u56e0\u3002" : "Task failed and its session was opened for details.",
+      taskFinishedNoOpen: lang === "zh" ? "\u4efb\u52a1\u5df2\u5b8c\u6210" : "Task completed.",
+      taskNeedsInputNoOpen: lang === "zh" ? "\u4efb\u52a1\u9700\u8981\u7ee7\u7eed\u5904\u7406" : "Task needs follow-up.",
+      taskInterruptedNoOpen: lang === "zh" ? "\u4efb\u52a1\u5df2\u4e2d\u65ad" : "Task was interrupted.",
+      taskFailedNoOpen: lang === "zh" ? "\u4efb\u52a1\u6267\u884c\u5931\u8d25" : "Task failed.",
       name: lang === "zh" ? "\u540d\u79f0" : "Name",
       prompt: lang === "zh" ? "\u63d0\u793a\u8bcd" : "Prompt",
       status: lang === "zh" ? "\u72b6\u6001" : "Status",
       lastRun: lang === "zh" ? "\u4e0a\u6b21\u8fd0\u884c" : "Last Run",
+      lastResult: lang === "zh" ? "\u4e0a\u6b21\u7ed3\u679c" : "Last Result",
+      noRunsYet: lang === "zh" ? "\u672a\u8fd0\u884c" : "Not run yet",
       runNow: lang === "zh" ? "\u7acb\u5373\u8fd0\u884c" : "Run now",
       enabled: lang === "zh" ? "\u542f\u7528\u4e2d" : "Enabled",
       paused: lang === "zh" ? "\u5df2\u505c\u7528" : "Disabled",
@@ -49,7 +77,7 @@ export default function Tasks() {
       promptRequired: lang === "zh" ? "\u8bf7\u8f93\u5165\u63d0\u793a\u8bcd" : "Please enter a prompt.",
       cronHelp: lang === "zh" ? "\u4f8b\u5982\uff1a`0 9 * * *` \u8868\u793a\u6bcf\u5929 9 \u70b9\u6267\u884c" : "Example: `0 9 * * *` runs every day at 9:00.",
     }),
-    [lang],
+    [lang, t],
   );
 
   const fetchTasks = async () => {
@@ -109,10 +137,64 @@ export default function Tasks() {
     });
   };
 
+  const openTaskSession = async (sessionId: string) => {
+    if (!onOpenTaskSession) return false;
+    await onOpenTaskSession(sessionId);
+    return true;
+  };
+
+  const getCompletionMessage = (status: TurnCompletionStatus, opened: boolean) => {
+    if (status === "failed") return opened ? ui.taskFailed : ui.taskFailedNoOpen;
+    if (status === "needs_input") return opened ? ui.taskNeedsInput : ui.taskNeedsInputNoOpen;
+    if (status === "interrupted") return opened ? ui.taskInterrupted : ui.taskInterruptedNoOpen;
+    return opened ? ui.taskFinished : ui.taskFinishedNoOpen;
+  };
+
+  const getCompletionType = (status: TurnCompletionStatus) => {
+    if (status === "failed") return "error" as const;
+    if (status === "needs_input" || status === "interrupted") return "warning" as const;
+    return "success" as const;
+  };
+
   const handleRun = async (id: string) => {
-    await apiPost(`/api/tasks/${id}/run`, {});
-    void message.success(ui.taskQueued);
-    void fetchTasks();
+    const messageKey = `task-run-${id}`;
+    setRunningTaskId(id);
+    void message.open({ key: messageKey, type: "loading", content: ui.taskRunning, duration: 0 });
+    try {
+      const result = await apiPost<TaskRunResponse>(`/api/tasks/${id}/run`, {});
+      await fetchTasks();
+      const opened = await openTaskSession(result.sessionId);
+      void message.open({
+        key: messageKey,
+        type: getCompletionType(result.status),
+        content: getCompletionMessage(result.status, opened),
+        duration: 4,
+      });
+    } catch (error) {
+      const content = error instanceof Error ? error.message : String(error);
+      void message.open({ key: messageKey, type: "error", content, duration: 4 });
+    } finally {
+      setRunningTaskId("");
+    }
+  };
+
+  const formatTaskResultLabel = (status?: TurnCompletionStatus) => {
+    if (!status) return ui.noRunsYet;
+    if (status === "completed") return t("done");
+    if (status === "needs_input") return t("needsInput");
+    if (status === "interrupted") return t("interrupted");
+    if (status === "failed") return t("failedExecution");
+    if (status === "undone") return t("undone");
+    return status;
+  };
+
+  const getTaskResultColor = (status?: TurnCompletionStatus) => {
+    if (status === "completed") return "green";
+    if (status === "needs_input") return "gold";
+    if (status === "interrupted") return "orange";
+    if (status === "failed") return "red";
+    if (status === "undone") return "default";
+    return "default";
   };
 
   const columns = [
@@ -148,10 +230,28 @@ export default function Tasks() {
       render: (enabled: boolean) => <Tag color={enabled ? "green" : "default"}>{enabled ? ui.enabled : ui.paused}</Tag>,
     },
     {
+      title: ui.lastResult,
+      dataIndex: "lastRunStatus",
+      key: "lastRunStatus",
+      render: (value: TurnCompletionStatus | undefined, record: Task) => (
+        <Tooltip title={record.lastError || undefined}>
+          <Tag color={getTaskResultColor(value)}>{formatTaskResultLabel(value)}</Tag>
+        </Tooltip>
+      ),
+    },
+    {
       title: ui.lastRun,
-      dataIndex: "lastRun",
       key: "lastRun",
-      render: (value?: string) => (value ? dayjs(value).format("YYYY-MM-DD HH:mm:ss") : "-"),
+      render: (_value: unknown, record: Task) => (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <span>{record.lastRun ? dayjs(record.lastRun).format("YYYY-MM-DD HH:mm:ss") : "-"}</span>
+          {record.lastError ? (
+            <span style={{ color: "#cf1322", fontSize: 12 }}>
+              {record.lastError.length > 60 ? `${record.lastError.slice(0, 57)}...` : record.lastError}
+            </span>
+          ) : null}
+        </div>
+      ),
     },
     {
       title: t("actions"),
@@ -164,9 +264,9 @@ export default function Tasks() {
           backgroundColor={colors.bgTertiary}
           borderColor={colors.borderStrong}
           items={[
-            { key: "run", label: ui.runNow },
-            { key: "edit", label: t("edit") },
-            { key: "delete", label: t("delete"), danger: true },
+            { key: "run", label: runningTaskId === record.id ? ui.runningTask : ui.runNow, disabled: runningTaskId === record.id },
+            { key: "edit", label: t("edit"), disabled: runningTaskId === record.id },
+            { key: "delete", label: t("delete"), danger: true, disabled: runningTaskId === record.id },
           ]}
           onItemClick={(key) => {
             if (key === "run") {

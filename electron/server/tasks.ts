@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ChatMessage } from "../../src/shared/types";
+import type { ChatMessage, TurnCompletionStatus } from "../../src/shared/types";
 import { streamFromLLM } from "./agent";
 import { clearRun, registerRun } from "./run-control";
 import { serverLog } from "./logger";
@@ -9,6 +9,18 @@ import { createSseQueue, scheduleSseCleanup } from "./sse";
 import { ensureTasksLoaded, saveTasks, taskStore } from "./task-store";
 import type { ScheduledTask, Session } from "./types";
 import { toErrorMessage } from "./utils";
+
+export type TaskExecutionOrigin = "manual" | "scheduler";
+
+export interface TaskExecutionResult {
+  taskId: string;
+  taskName: string;
+  sessionId: string;
+  sessionTitle: string;
+  status: TurnCompletionStatus;
+  finishedAt: string;
+  assistantPreview: string;
+}
 
 function cronFieldMatches(field: string, value: number, min: number, max: number) {
   return field.split(",").some((part) => {
@@ -58,11 +70,16 @@ function taskIsDue(task: ScheduledTask, now: Date) {
     return !Number.isNaN(runAt.getTime()) && now.getTime() >= runAt.getTime();
   }
 
-  if (now.getSeconds() > 5) return false;
   return cronMatches(task.cron, now);
 }
 
-export async function executeTask(task: ScheduledTask, getStoredApiKey: () => string) {
+function summarizeTaskContent(content: string) {
+  const flattened = content.replace(/\s+/g, " ").trim();
+  if (!flattened) return "";
+  return flattened.length > 140 ? `${flattened.slice(0, 137)}...` : flattened;
+}
+
+export async function executeTask(task: ScheduledTask, getStoredApiKey: () => string): Promise<TaskExecutionResult> {
   await ensureTasksLoaded();
   await ensureSessionsLoaded();
   const now = new Date().toISOString();
@@ -78,7 +95,7 @@ export async function executeTask(task: ScheduledTask, getStoredApiKey: () => st
 
   const session: Session = {
     id: sessionId,
-    title: `[任务] ${task.name}`,
+    title: `[Task] ${task.name}`,
     messages: [userMsg],
     createdAt: now,
     updatedAt: now,
@@ -87,32 +104,67 @@ export async function executeTask(task: ScheduledTask, getStoredApiKey: () => st
   registerRun(requestId);
   createSseQueue(requestId);
 
-  const settings = buildRuntimeSettings();
-  const doneEvent = await streamFromLLM(settings, session, requestId, getStoredApiKey());
-  session.messages.push({
-    id: randomUUID(),
-    role: "assistant",
-    content: doneEvent.content,
-    createdAt: new Date().toISOString(),
-    status: doneEvent.status,
-    attachments: doneEvent.attachments ?? [],
-  });
-  session.updatedAt = new Date().toISOString();
-  task.lastRun = session.updatedAt;
-  if (task.runOnce) {
-    task.enabled = false;
+  try {
+    let doneEvent: Awaited<ReturnType<typeof streamFromLLM>>;
+    try {
+      const settings = buildRuntimeSettings();
+      doneEvent = await streamFromLLM(settings, session, requestId, getStoredApiKey());
+    } catch (error) {
+      doneEvent = {
+        type: "done",
+        content: toErrorMessage(error),
+        status: "failed",
+        stopReason: "runtime_error",
+      };
+    }
+
+    const finishedAt = new Date().toISOString();
+    session.messages.push({
+      id: randomUUID(),
+      role: "assistant",
+      content: doneEvent.content,
+      createdAt: finishedAt,
+      status: doneEvent.status,
+      attachments: doneEvent.attachments ?? [],
+    });
+    session.updatedAt = finishedAt;
+    task.lastRun = finishedAt;
+    task.lastRunStatus = doneEvent.status;
+    task.lastError = doneEvent.status === "failed" ? doneEvent.content : undefined;
+    if (task.runOnce) {
+      task.enabled = false;
+    }
+    await saveTasks();
+    await saveSessionsToDisk();
+
+    if (doneEvent.status === "failed") {
+      serverLog(`ERROR Task failed: ${task.name}: ${doneEvent.content}`);
+    } else {
+      serverLog(`INFO Task executed: ${task.name}`);
+    }
+
+    return {
+      taskId: task.id,
+      taskName: task.name,
+      sessionId,
+      sessionTitle: session.title,
+      status: doneEvent.status,
+      finishedAt,
+      assistantPreview: summarizeTaskContent(doneEvent.content),
+    };
+  } finally {
+    clearRun(requestId);
+    scheduleSseCleanup(requestId);
   }
-  await saveTasks();
-  await saveSessionsToDisk();
-  clearRun(requestId);
-  scheduleSseCleanup(requestId);
-  serverLog(`INFO Task executed: ${task.name}`);
 }
 
 let taskSchedulerTimer: ReturnType<typeof setInterval> | null = null;
 const runningTasks = new Set<string>();
 
-export function startTaskScheduler(getStoredApiKey: () => string) {
+export function startTaskScheduler(
+  getStoredApiKey: () => string,
+  onTaskFinished?: (result: TaskExecutionResult, meta: { origin: TaskExecutionOrigin }) => void,
+) {
   if (taskSchedulerTimer) return;
   void ensureTasksLoaded();
   taskSchedulerTimer = setInterval(() => {
@@ -125,6 +177,9 @@ export function startTaskScheduler(getStoredApiKey: () => string) {
       if (task.lastRun?.slice(0, 16) === minuteKey) continue;
       runningTasks.add(task.id);
       void executeTask(task, getStoredApiKey)
+        .then((result) => {
+          onTaskFinished?.(result, { origin: "scheduler" });
+        })
         .catch((error) => serverLog(`ERROR Task failed: ${task.name}: ${toErrorMessage(error)}`))
         .finally(() => runningTasks.delete(task.id));
     }

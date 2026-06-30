@@ -3,6 +3,7 @@
   "defaultEnabled": [
     "shell_command",
     "invoke_model",
+    "create_scheduled_task",
     "recall_memory",
     "store_script_memory",
     "browser_action"
@@ -118,6 +119,48 @@
             "description": "Optional speaking style instructions for text-to-speech"
           }
         }
+      }
+    },
+    {
+      "name": "create_scheduled_task",
+      "label": "Create Scheduled Task",
+      "group": "productivity",
+      "description": "Create a scheduled task that appears in the Tasks panel and runs through Nexo's built-in scheduler. Use this when the user wants a reminder, recurring prompt, delayed follow-up, or an automated future run. Provide either cron, runAt, or delayMinutes. The task prompt is what the scheduled run will send into the agent.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Optional task name shown in the Tasks panel."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Required prompt content the task will send when it runs."
+          },
+          "cron": {
+            "type": "string",
+            "description": "Optional 5-field cron expression: minute hour day-of-month month day-of-week."
+          },
+          "runAt": {
+            "type": "string",
+            "description": "Optional ISO 8601 datetime for a one-time future run."
+          },
+          "delayMinutes": {
+            "type": "number",
+            "description": "Optional delay in minutes from now for a one-time future run."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Optional enabled flag. Defaults to true."
+          },
+          "runOnce": {
+            "type": "boolean",
+            "description": "Optional one-time run flag. Defaults to true when runAt or delayMinutes is used without cron."
+          }
+        },
+        "required": [
+          "prompt"
+        ]
       }
     },
     {

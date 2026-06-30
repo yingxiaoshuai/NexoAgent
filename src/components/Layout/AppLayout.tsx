@@ -62,7 +62,7 @@ export const AppLayout: React.FC = () => {
   const isDesktopApp = isElectron();
   const browserWorkbenchAvailable = isDesktopApp;
   const isWindowsDesktop = isDesktopApp && navigator.userAgent.includes("Windows");
-  const { ensureRuntimeReady, loadSessions, newSession, loadSettings } = useChatStore();
+  const { ensureRuntimeReady, loadSessions, loadModelProfiles, newSession, loadSettings } = useChatStore();
   const { mode, colors, toggleTheme } = useTheme();
   const { lang, setLang, t } = useI18n();
   const resizeOriginRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -98,7 +98,12 @@ export const AppLayout: React.FC = () => {
     void (async () => {
       await ensureRuntimeReady();
       if (disposed) return;
-      await loadSessions();
+      await Promise.all([
+        loadSessions(),
+        loadModelProfiles().catch((error) => {
+          console.warn("[app] model profiles load failed:", error);
+        }),
+      ]);
       const sessions = useChatStore.getState().sessions;
       if (disposed) return;
       if (sessions.length === 0) {
@@ -123,6 +128,29 @@ export const AppLayout: React.FC = () => {
       }
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (view !== "chat") return;
+
+    const interval = window.setInterval(() => {
+      const state = useChatStore.getState();
+      const activeSessionId = state.activeSessionId;
+      if (!activeSessionId || state.streaming) return;
+
+      const activeMeta = state.sessions.find((session) => session.id === activeSessionId);
+      const latestMessageAt = state.messages[state.messages.length - 1]?.createdAt ?? "";
+      if (!activeMeta?.updatedAt || !latestMessageAt) return;
+      if (activeMeta.updatedAt <= latestMessageAt) return;
+
+      void state.selectSession(activeSessionId).catch((error) => {
+        console.warn("[app] failed to refresh active session:", error);
+      });
+    }, 2500);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [view]);
 
   useEffect(() => {
     if (!browserWorkbenchAvailable && view === "browser") {
@@ -284,6 +312,21 @@ export const AppLayout: React.FC = () => {
     await desktopApi?.closeWindow?.();
   };
 
+  const openTaskSession = async (sessionId: string) => {
+    setView("chat");
+    await useChatStore.getState().loadSessions();
+    await useChatStore.getState().selectSession(sessionId);
+  };
+
+  useEffect(() => {
+    const unsubscribe = desktopApi?.onTaskSessionRequested?.((sessionId) => {
+      void openTaskSession(sessionId);
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [desktopApi]);
+
   return (
     <Layout style={{ height: "100vh", background: colors.bgPrimary, paddingTop: isWindowsDesktop ? DESKTOP_DRAG_BAR_HEIGHT : 0, position: "relative" }}>
       {isWindowsDesktop && (
@@ -422,13 +465,13 @@ export const AppLayout: React.FC = () => {
       )}
 
       <Content style={{ display: "flex", flexDirection: "column", overflow: "hidden", background: colors.bgPrimary }}>
-        {view === "chat" && <ChatPanel />}
+        {view === "chat" && <ChatPanel onOpenSettings={() => setView("settings")} />}
         {browserWorkbenchAvailable && view === "browser" && <BrowserWorkbench />}
         {view === "memory" && <MemoryPanel />}
         {view === "knowledge" && <Knowledge />}
         {view === "tools" && <Tools />}
         {view === "skills" && <Skills />}
-        {view === "tasks" && <Tasks />}
+        {view === "tasks" && <Tasks onOpenTaskSession={openTaskSession} />}
         {view === "logs" && <Logs />}
         {view === "channels" && <Channels />}
         {view === "settings" && <Settings />}
