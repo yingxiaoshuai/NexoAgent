@@ -1,5 +1,6 @@
 ﻿import React, { useEffect, useMemo, useState } from "react";
 import {
+  AutoComplete,
   Button,
   Checkbox,
   Divider,
@@ -152,10 +153,10 @@ function buildUi(lang: "zh" | "en") {
     apiKeyKeep: lang === "zh" ? "API Key\uff08\u7559\u7a7a\u5219\u4fdd\u7559\u539f\u503c\uff09" : "API Key (leave empty to keep current value)",
     replaceApiKey: lang === "zh" ? "\u66ff\u6362 API Key" : "Replace API key",
     model: lang === "zh" ? "\u6a21\u578b" : "Model",
-    modelRequired: lang === "zh" ? "\u8bf7\u9009\u62e9\u6a21\u578b" : "Please select a model.",
+    modelRequired: lang === "zh" ? "\u8bf7\u8f93\u5165\u6a21\u578b\u540d" : "Please enter a model.",
     fetchModels: lang === "zh" ? "\u91cd\u65b0\u83b7\u53d6" : "Refresh",
     fetchingModels: lang === "zh" ? "\u6b63\u5728\u83b7\u53d6\u6a21\u578b..." : "Loading models...",
-    selectModel: lang === "zh" ? "\u8bf7\u9009\u62e9\u6a21\u578b" : "Select a model",
+    selectModel: lang === "zh" ? "\u53ef\u624b\u52a8\u8f93\u5165\u6a21\u578b\u540d\uff0c\u6216\u5148\u83b7\u53d6\u5217\u8868" : "Enter a model name or fetch models",
     capabilities: lang === "zh" ? "\u80fd\u529b" : "Capabilities",
     capabilitiesRequired: lang === "zh" ? "\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u80fd\u529b" : "Select at least one capability.",
     primaryModel: lang === "zh" ? "\u8bbe\u4e3a\u4e3b\u6a21\u578b" : "Set as Primary",
@@ -426,9 +427,12 @@ export const Settings: React.FC = () => {
 
   const saveProfile = async () => {
     const values = await profileForm.validateFields();
+    const modelId = String(values.model ?? "").trim();
     await apiPost<ModelProfile>("/api/model-profiles", {
       ...editingProfile,
       ...values,
+      name: String(values.name ?? "").trim() || modelId,
+      model: modelId,
       providerName: normalizeServiceProviderName(values.providerName, String(values.apiBase ?? ""), values.providerId),
       apiBase: String(values.apiBase ?? "").trim(),
       apiKey: values.apiKey === SAVED_API_KEY_MASK ? "" : values.apiKey,
@@ -503,6 +507,19 @@ export const Settings: React.FC = () => {
     value: model.id,
     label: model.ownedBy ? `${model.label} | ${model.ownedBy}` : model.label,
   }));
+
+  const applyDiscoveredModel = (modelId: string) => {
+    const model = discoveredModels.find((item) => item.id === modelId);
+    if (!model) return;
+    profileForm.setFieldsValue({
+      model: model.id,
+      name: profileForm.getFieldValue("name") || model.label,
+      capabilities: model.capabilities.length ? model.capabilities : ["chat"],
+      thinkingEnabled: profileForm.getFieldValue("thinkingEnabled") ?? true,
+      thinkingEffort: profileForm.getFieldValue("thinkingEffort") || "high",
+      description: profileForm.getFieldValue("description") || (model.ownedBy ? ui.discoveredFrom(model.ownedBy) : ui.discoveredFrom("provider")),
+    });
+  };
 
   useEffect(() => {
     if (!profileModalOpen || !watchedProviderId) return;
@@ -808,21 +825,23 @@ export const Settings: React.FC = () => {
             )}
             rules={[{ required: true, message: ui.modelRequired }]}
           >
-            <Select
+            <AutoComplete
               options={modelOptions}
-              showSearch
               placeholder={discovering ? ui.fetchingModels : ui.selectModel}
-              onSelect={(value) => {
-                const model = discoveredModels.find((item) => item.id === value);
-                if (!model) return;
+              filterOption={(inputValue, option) =>
+                String(option?.value ?? "").toLowerCase().includes(inputValue.toLowerCase())
+                || String(option?.label ?? "").toLowerCase().includes(inputValue.toLowerCase())
+              }
+              onChange={(value) => {
+                const nextModel = String(value ?? "");
+                const discovered = discoveredModels.find((item) => item.id === nextModel);
                 profileForm.setFieldsValue({
-                  model: model.id,
-                  name: profileForm.getFieldValue("name") || model.label,
-                  capabilities: model.capabilities.length ? model.capabilities : ["chat"],
-                  thinkingEnabled: profileForm.getFieldValue("thinkingEnabled") ?? true,
-                  thinkingEffort: profileForm.getFieldValue("thinkingEffort") || "high",
-                  description: profileForm.getFieldValue("description") || (model.ownedBy ? ui.discoveredFrom(model.ownedBy) : ui.discoveredFrom("provider")),
+                  model: nextModel,
+                  name: profileForm.getFieldValue("name") || (discovered ? undefined : nextModel.trim()),
                 });
+              }}
+              onSelect={(value) => {
+                applyDiscoveredModel(String(value));
               }}
             />
           </Form.Item>

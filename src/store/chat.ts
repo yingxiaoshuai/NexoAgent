@@ -1,7 +1,14 @@
 import { create } from "zustand";
 import { v4 as uuid } from "uuid";
 import { message as antdMessage } from "antd";
-import type { AgentSettings, Attachment as ChatAttachment, ChatMessage, ConversationSurface, ModelProfile } from "../shared/types";
+import type {
+  AgentSettings,
+  Attachment as ChatAttachment,
+  ChatMessage,
+  ConversationSurface,
+  MessageBlock as SharedMessageBlock,
+  ModelProfile,
+} from "../shared/types";
 import { apiDelete, apiGet, apiPatch, apiPost, getRuntimeApiBase, setRuntimeApiBase, subscribeStream } from "../services/api";
 import { sanitizeApiKeyForSave } from "../shared/settings";
 import type { DesktopApi } from "../shared/desktop";
@@ -27,9 +34,7 @@ export type Attachment = ChatAttachment;
 
 export type MessageToolCalls = Record<string, ToolCallEvent[]>;
 
-export type MessageBlock =
-  | { type: "text"; content: string }
-  | { type: "tool"; id: string };
+export type MessageBlock = SharedMessageBlock;
 
 export type MessageBlocks = Record<string, MessageBlock[]>;
 
@@ -73,6 +78,23 @@ function replaceMessageBlockKey<T>(record: Record<string, T>, fromId: string, to
   next[toId] = next[fromId];
   delete next[fromId];
   return next;
+}
+
+function buildMessageTraceState(messages: ChatMessage[]) {
+  const toolCalls: MessageToolCalls = {};
+  const messageBlocks: MessageBlocks = {};
+
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    if (message.meta?.toolCalls?.length) {
+      toolCalls[message.id] = [...message.meta.toolCalls];
+    }
+    if (message.meta?.messageBlocks?.length) {
+      messageBlocks[message.id] = [...message.meta.messageBlocks];
+    }
+  }
+
+  return { toolCalls, messageBlocks };
 }
 
 const defaultSettings: AgentSettings = {
@@ -260,7 +282,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     selectSession: async (id) => {
       await ensureRuntimeReady();
       const messages = await apiGet<ChatMessage[]>(`/api/sessions/${id}/messages`);
-      set({ activeSessionId: id, messages, toolCalls: {}, messageBlocks: {}, undoableMessageIds: new Set() });
+      const traceState = buildMessageTraceState(messages);
+      set({ activeSessionId: id, messages, ...traceState, undoableMessageIds: new Set() });
     },
 
     deleteSession: async (id) => {
@@ -449,9 +472,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
           const responseAttachments = Array.isArray(event.attachments)
             ? (event.attachments as ChatAttachment[])
             : [];
+          const responseToolCalls = Array.isArray(event.toolCalls)
+            ? (event.toolCalls as ToolCallEvent[])
+            : undefined;
+          const responseMessageBlocks = Array.isArray(event.messageBlocks)
+            ? (event.messageBlocks as MessageBlock[])
+            : undefined;
           set((state) => ({
             streaming: false,
             cancelStream: () => {},
+            toolCalls: responseToolCalls
+              ? { ...state.toolCalls, [serverTurnId]: responseToolCalls }
+              : state.toolCalls,
+            messageBlocks: responseMessageBlocks
+              ? { ...state.messageBlocks, [serverTurnId]: responseMessageBlocks }
+              : state.messageBlocks,
             messages: state.messages.map((message) =>
               message.id === serverTurnId
                 ? {
@@ -459,6 +494,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
                     content: full || (event.content as string),
                     status,
                     attachments: responseAttachments.length ? responseAttachments : message.attachments,
+                    meta: {
+                      ...(message.meta ?? {}),
+                      ...(responseToolCalls ? { toolCalls: responseToolCalls } : {}),
+                      ...(responseMessageBlocks ? { messageBlocks: responseMessageBlocks } : {}),
+                    },
                   }
                 : message
             ),

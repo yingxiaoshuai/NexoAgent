@@ -412,6 +412,19 @@ export interface Attachment {
   source?: "upload" | "generated";
 }
 
+export interface ToolCallTrace {
+  id: string;
+  name: string;
+  input: unknown;
+  output?: string;
+  elapsed?: number;
+  status: "running" | "done" | "error";
+}
+
+export type MessageBlock =
+  | { type: "text"; content: string }
+  | { type: "tool"; id: string };
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
@@ -422,6 +435,8 @@ export interface ChatMessage {
   meta?: {
     undoneAt?: string;
     undoneMessage?: string;
+    toolCalls?: ToolCallTrace[];
+    messageBlocks?: MessageBlock[];
   };
 }
 

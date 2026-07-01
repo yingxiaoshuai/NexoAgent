@@ -1,4 +1,5 @@
 import { ChatOpenAI, type ChatOpenAICallOptions } from "@langchain/openai";
+import { ChatAnthropic } from "@langchain/anthropic";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from "@langchain/core/messages";
 import type { AIMessageChunk } from "@langchain/core/messages";
 import type { BaseMessage } from "@langchain/core/messages";
@@ -8,14 +9,14 @@ import {
   providerConnectionAllowsEmptyApiKey,
   resolveProviderSdkApiKey,
 } from "../../src/shared/providers";
-import type { AgentSettings, ChatMessage, ConversationSurface } from "../../src/shared/types";
+import type { AgentSettings, ChatMessage, ConversationSurface, MessageBlock, ToolCallTrace } from "../../src/shared/types";
 import { extractAndStore, recallMemory } from "../memory";
 import { loadAttachmentContext } from "./attachments";
 import { circuitBreakerInfoFromDecision, createAgentLoopCircuitBreaker } from "./agent-loop-circuit-breaker";
 import { retrieveKnowledgeContext } from "./knowledge";
 import { resolveMemoryEmbeddingSettings } from "./memory-embedding";
 import { resolveAndPersistModelContextBudget, getEnabledModelCapabilitySummary } from "./model-profiles";
-import { callChatCompletion, resolvePrimaryModelConfig, resolveThinkingRequestConfig } from "./model-runtime";
+import { resolvePrimaryModelConfig, resolveThinkingRequestConfig } from "./model-runtime";
 import { isRunInterrupted } from "./run-control";
 import { pushEvent } from "./sse";
 import { getWebSettings } from "./settings";
@@ -27,6 +28,7 @@ import type { ChatAttachment, Session, StreamEvent, ToolDef, ToolExecutionContex
 import { decodeHtml, parseToolArgs, toErrorMessage } from "./utils";
 import { getWorkspaceRoot } from "./workspace";
 import { createSnapshot } from "./snapshot";
+import { attachmentToDataUrl } from "./media";
 const MISSING_PRIMARY_MODEL_MESSAGE = "No primary model is configured. Go to Settings > Models, create a model, add an API key, and mark it as Primary.";
 const MISSING_API_KEY_MESSAGE = "The current primary model does not have an API key configured. Add one in Settings > Models and try again.";
 const LOOP_GUARD_FALLBACK_MESSAGE = "\n\nThis run entered a repeated loop, so I stopped here for now. The tool results gathered so far are still available. Send \"continue\" if you want me to keep working from the current results.";
@@ -70,6 +72,53 @@ function buildOpenAIThinkingCallOptions(settings: AgentSettings, model: string):
   return thinking.openAIReasoningEffort
     ? { reasoningEffort: thinking.openAIReasoningEffort }
     : {};
+}
+
+function createLangChainChatModel(
+  config: Awaited<ReturnType<typeof resolvePrimaryModelConfig>>,
+  apiKey: string,
+  settings: AgentSettings,
+  overrides: { temperature?: number; maxTokens?: number; streaming?: boolean } = {},
+) {
+  const temperature = overrides.temperature ?? config.temperature ?? settings.temperature ?? 0.4;
+  if (config.providerId === "anthropic-compatible") {
+    return new ChatAnthropic({
+      apiKey,
+      model: config.model,
+      temperature,
+      maxTokens: overrides.maxTokens,
+      streaming: overrides.streaming ?? true,
+      streamUsage: true,
+      anthropicApiUrl: config.apiBase.replace(/\/v1\/?$/i, ""),
+    });
+  }
+
+  return new ChatOpenAI({
+    apiKey: resolveProviderSdkApiKey(apiKey, {
+      providerId: config.providerId,
+      providerName: settings.providerName,
+      apiBase: config.apiBase,
+    }),
+    model: config.model,
+    temperature,
+    maxTokens: overrides.maxTokens,
+    configuration: { baseURL: config.apiBase },
+    streaming: overrides.streaming ?? true,
+  });
+}
+
+function messageContentToText(content: unknown) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object" && "text" in part) {
+        return typeof part.text === "string" ? part.text : "";
+      }
+      return "";
+    })
+    .join("");
 }
 
 function buildBrowserSurfacePrompt(surface: ConversationSurface) {
@@ -549,6 +598,30 @@ function mergeMemoryContext(...contexts: string[]) {
   return lines.join("\n");
 }
 
+async function buildCurrentUserMultimodalContent(
+  content: string,
+  attachments: ChatAttachment[] = [],
+) {
+  const imageAttachments = attachments.filter((attachment) => attachment.type === "image");
+  if (!imageAttachments.length) {
+    return content;
+  }
+
+  const imageParts = await Promise.all(
+    imageAttachments.map(async (attachment) => ({
+      type: "image_url" as const,
+      image_url: {
+        url: await attachmentToDataUrl(attachment),
+      },
+    })),
+  );
+
+  return [
+    { type: "text" as const, text: content || "Please analyze the attached image." },
+    ...imageParts,
+  ];
+}
+
 async function buildBudgetAwareConversationContext(
   settings: AgentSettings,
   session: Session,
@@ -614,9 +687,6 @@ async function buildBudgetAwareConversationContext(
     estimatedPromptTokens: estimateTotal(),
     compacted,
     recentRawMessages: recentMessages,
-    messages: recentMessages.map((message) =>
-      message.role === "user" ? new HumanMessage(message.content) : new AIMessage(message.content)
-    ),
   };
 }
 
@@ -665,10 +735,6 @@ export async function streamFromLLM(
   }
 
   const model = primaryConfig.model;
-  const thinkingConfig = resolveThinkingRequestConfig(settings, model, {
-    thinkingEnabled: primaryConfig.thinkingEnabled,
-    thinkingEffort: primaryConfig.thinkingEffort,
-  });
   const openAiThinkingOptions = buildOpenAIThinkingCallOptions(
     {
       ...settings,
@@ -748,6 +814,7 @@ export async function streamFromLLM(
     "Context priority: current user message and the current session transcript are authoritative for resolving omitted references, targets, surfaces, and project context. Current-session compressed summaries come next. Recalled memories, knowledge notes, and skills are background only; ignore them whenever they conflict with or would change the target implied by the current session.",
     "When the current session established a target such as admin, client, server, management console, or a specific page, keep using that target for follow-up requests unless the user explicitly switches it.",
     "Use tools when they are helpful.",
+    "When current user attachments include images, the images are included directly in this model request. Inspect attached images directly and do not call invoke_model just to analyze them.",
     "Never write DSML/XML-like tool call tags in the user-visible response. Use the provided tool-calling interface only.",
     "Use shell_command for terminal tasks, filesystem inspection, and command-line workflows.",
     buildBrowserSurfacePrompt(surface),
@@ -761,7 +828,7 @@ export async function streamFromLLM(
     `Primary model: ${primaryConfig.name} / ${primaryConfig.model}.`,
     `Resolved context budget: window=${budgetConfig.contextWindowTokens}, input=${budgetConfig.maxInputTokens}, compact=${budgetConfig.autoCompactTokenLimit}, source=${resolvedBudget.contextWindowSource ?? "default"}.`,
     "You are the orchestrator. Route specialist work by capability instead of asking the user for a model name.",
-    'Use invoke_model with capability="vision" for image analysis, capability="image_generation" for text-to-image, capability="image_editing" for editing existing images, capability="speech_to_text" for transcription, and capability="text_to_speech" for spoken audio generation.',
+    'Use invoke_model with capability="vision" only when you need a separate specialist vision model; use capability="image_generation" for text-to-image, capability="image_editing" for editing existing images, capability="speech_to_text" for transcription, and capability="text_to_speech" for spoken audio generation.',
     "Use invoke_model with a capability when a configured specialist model is better suited for a sub-task.",
     "Use recall_memory when prior durable context could materially improve the answer.",
     `Configured specialist capabilities:\n${formatCapabilitySummary(capabilitySummary)}`,
@@ -775,29 +842,16 @@ export async function streamFromLLM(
       "Do not invent details. Keep the summary concise but operational.",
     ].join("\n");
 
-    if (primaryConfig.providerId === "anthropic-compatible") {
-      const result = await callChatCompletion(primaryConfig, [
-        { role: "system", content: summaryInstruction },
-        { role: "user", content: transcript },
-      ], { temperature: 0, maxTokens: 900 });
-      return result.content;
-    }
-
-    const summaryLlm = new ChatOpenAI({
-      apiKey: resolveProviderSdkApiKey(effectiveApiKey, {
-        providerId: primaryConfig.providerId,
-        providerName: settings.providerName,
-        apiBase,
-      }),
-      model,
+    const summaryLlm = createLangChainChatModel(primaryConfig, effectiveApiKey, settings, {
       temperature: 0,
-      configuration: { baseURL: apiBase },
+      maxTokens: 900,
+      streaming: false,
     });
     const response = await summaryLlm.invoke([
       new SystemMessage(summaryInstruction),
       new HumanMessage(transcript),
     ]);
-    return typeof response.content === "string" ? response.content.trim() : JSON.stringify(response.content);
+    return messageContentToText(response.content).trim() || JSON.stringify(response.content);
   };
 
   const conversationContext = await buildBudgetAwareConversationContext(
@@ -810,85 +864,74 @@ export async function streamFromLLM(
     ],
     budgetConfig
   );
+  const currentUserMessageId = [...conversationContext.recentRawMessages]
+    .reverse()
+    .find((message) => message.role === "user")?.id ?? "";
+  const currentUserContent = await buildCurrentUserMultimodalContent(lastUserMsg, attachments);
+  const runtimeContentForMessage = (message: ChatMessage) =>
+    message.role === "user" && message.id === currentUserMessageId ? currentUserContent : message.content;
+  const recentRuntimeMessages: BaseMessage[] = conversationContext.recentRawMessages.map((message) =>
+    message.role === "user"
+      ? new HumanMessage({ content: runtimeContentForMessage(message) as any })
+      : new AIMessage(message.content)
+  );
 
   const lcMessages: BaseMessage[] = [
     new SystemMessage(systemPrompt),
     ...(conversationContext.compactedSummary
       ? [new SystemMessage(`Earlier conversation summary from automatic context compaction:\n${conversationContext.compactedSummary}`)]
       : []),
-    ...conversationContext.messages,
+    ...recentRuntimeMessages,
   ];
   let turnSnapshotCreated = false;
+  let fullContent = "";
+  const persistentToolCalls: ToolCallTrace[] = [];
+  const persistentMessageBlocks: MessageBlock[] = [];
+  const appendPersistentText = (content: string) => {
+    if (!content) return;
+    const last = persistentMessageBlocks[persistentMessageBlocks.length - 1];
+    if (last?.type === "text") {
+      last.content += content;
+    } else {
+      persistentMessageBlocks.push({ type: "text", content });
+    }
+  };
+  const emitToken = (content: string) => {
+    if (!content) return;
+    appendPersistentText(content);
+    pushEvent(requestId, { type: "token", content });
+  };
+  const recordPersistentToolCall = (id: string, name: string, input: unknown) => {
+    persistentToolCalls.push({ id, name, input, status: "running" });
+    persistentMessageBlocks.push({ type: "tool", id });
+  };
+  const recordPersistentToolResult = (id: string, output: string, elapsed: number) => {
+    const isError = output.trim().startsWith("Error:");
+    const existing = persistentToolCalls.find((toolCall) => toolCall.id === id);
+    if (existing) {
+      existing.output = output;
+      existing.elapsed = elapsed;
+      existing.status = isError ? "error" : "done";
+    }
+  };
   const compactionNotice = conversationContext.compacted ? CONTEXT_COMPACTION_NOTICE : "";
   if (compactionNotice) {
-    pushEvent(requestId, { type: "token", content: compactionNotice });
+    fullContent += compactionNotice;
+    emitToken(compactionNotice);
   }
 
-  if (primaryConfig.providerId === "anthropic-compatible") {
-    try {
-      const result = await callChatCompletion(primaryConfig, [
-        { role: "system", content: systemPrompt },
-        ...(conversationContext.compactedSummary
-          ? [{ role: "system" as const, content: `Earlier conversation summary from automatic context compaction:\n${conversationContext.compactedSummary}` }]
-          : []),
-        ...conversationContext.recentRawMessages.map((message) => ({
-          role: message.role === "assistant" ? "assistant" as const : "user" as const,
-          content: message.content,
-        })),
-      ], {
-        temperature: primaryConfig.temperature ?? settings.temperature ?? 0.4,
-        maxTokens: resolvedBudget.reservedOutputTokens ?? 2048,
-        thinking: thinkingConfig,
-      });
-      pushTokenText(requestId, result.content);
-      const finalContent = `${compactionNotice}${result.content}`;
-      const doneEvent: Extract<StreamEvent, { type: "done" }> = {
-        type: "done",
-        hasSnapshot: turnSnapshotCreated,
-        content: finalContent,
-        status: "completed",
-        stopReason: "completed",
-        usage: {
-          promptTokens: result.usage?.prompt_tokens,
-          completionTokens: result.usage?.completion_tokens,
-        },
-        contextBudget: {
-          contextWindowTokens: budgetConfig.contextWindowTokens,
-          maxInputTokens: budgetConfig.maxInputTokens,
-          autoCompactTokenLimit: budgetConfig.autoCompactTokenLimit,
-          estimatedPromptTokens: conversationContext.estimatedPromptTokens,
-          source: resolvedBudget.contextWindowSource,
-        },
-      };
-      return buildDoneEvent(requestId, doneEvent);
-    } catch (error) {
-      return buildDoneEvent(requestId, {
-        type: "done",
-        hasSnapshot: turnSnapshotCreated,
-        content: toErrorMessage(error),
-        status: "failed",
-        stopReason: "runtime_error",
-      });
-    }
-  }
-
-  const llm = new ChatOpenAI({
-    apiKey: resolveProviderSdkApiKey(effectiveApiKey, {
-      providerId: primaryConfig.providerId,
-      providerName: settings.providerName,
-      apiBase,
-    }),
-    model,
-    temperature: primaryConfig.temperature ?? settings.temperature ?? 0.4,
-    configuration: { baseURL: apiBase },
+  const llm = createLangChainChatModel(primaryConfig, effectiveApiKey, settings, {
+    maxTokens: resolvedBudget.reservedOutputTokens ?? 2048,
     streaming: true,
   });
+  const modelCallOptions = primaryConfig.providerId === "openai-compatible" ? openAiThinkingOptions : {};
 
   const enabledToolMap = new Map(enabledToolDefs.map((tool) => [tool.name, tool]));
+  const toolCapableLlm = llm as any;
   const llmRunner = enabledToolDefs.length > 0
-    ? llm.bindTools(enabledToolDefs.map(toLcTool), openAiThinkingOptions)
-    : llm.withConfig(openAiThinkingOptions);
-  const llmNoTools = llm.withConfig(openAiThinkingOptions);
+    ? toolCapableLlm.bindTools(enabledToolDefs.map(toLcTool), modelCallOptions)
+    : toolCapableLlm.withConfig(modelCallOptions);
+  const llmNoTools = toolCapableLlm.withConfig(modelCallOptions);
   const toolCtx: ToolExecutionContext = {
     settings,
     apiKey: effectiveApiKey,
@@ -896,7 +939,6 @@ export async function streamFromLLM(
     capabilitySummary,
   };
 
-  let fullContent = compactionNotice;
   let promptTokens: number | undefined;
   let completionTokens: number | undefined;
   const assistantAttachments: ChatAttachment[] = [];
@@ -925,13 +967,13 @@ export async function streamFromLLM(
           break;
         }
         const c = chunk as AIMessageChunk;
-        const token = typeof c.content === "string" ? c.content : "";
+        const token = messageContentToText(c.content);
         if (token) {
           const dsmlChunk = dsmlBuffer.push(token);
           if (dsmlChunk.visibleText) {
             turnContent += dsmlChunk.visibleText;
             fullContent += dsmlChunk.visibleText;
-            pushEvent(requestId, { type: "token", content: dsmlChunk.visibleText });
+            emitToken(dsmlChunk.visibleText);
           }
           toolCallBuffer.push(...dsmlChunk.calls);
         }
@@ -970,7 +1012,7 @@ export async function streamFromLLM(
       if (finalDsmlChunk.visibleText) {
         turnContent += finalDsmlChunk.visibleText;
         fullContent += finalDsmlChunk.visibleText;
-        pushEvent(requestId, { type: "token", content: finalDsmlChunk.visibleText });
+        emitToken(finalDsmlChunk.visibleText);
       }
       toolCallBuffer.push(...finalDsmlChunk.calls);
       turnContent = stripDsmlArtifacts(turnContent);
@@ -1010,6 +1052,7 @@ export async function streamFromLLM(
           break;
         }
         const parsedArgs = parseToolArgs(tc.args);
+        recordPersistentToolCall(tc.id, tc.name, parsedArgs);
         pushEvent(requestId, { type: "tool_call", id: tc.id, name: tc.name, input: parsedArgs });
 
         const toolFn = enabledToolMap.get(tc.name);
@@ -1044,6 +1087,7 @@ export async function streamFromLLM(
           appendUniqueAttachment(assistantAttachments, attachment);
         }
 
+        recordPersistentToolResult(tc.id, String(output), elapsed);
         pushEvent(requestId, { type: "tool_result", id: tc.id, output: String(output), elapsed });
         circuitBreaker?.recordToolResult({
           name: tc.name,
@@ -1067,7 +1111,7 @@ export async function streamFromLLM(
       if (terminalSummary) {
         const finalToken = `\n\n${terminalSummary}`;
         fullContent += finalToken;
-        pushEvent(requestId, { type: "token", content: finalToken });
+        emitToken(finalToken);
         break;
       }
 
@@ -1096,13 +1140,13 @@ export async function streamFromLLM(
           break;
         }
         const c = chunk as AIMessageChunk;
-        const token = typeof c.content === "string" ? c.content : "";
+        const token = messageContentToText(c.content);
         if (token) {
           const dsmlChunk = finalDsmlBuffer.push(token);
           if (dsmlChunk.visibleText) {
             finalContent += dsmlChunk.visibleText;
             fullContent += dsmlChunk.visibleText;
-            pushEvent(requestId, { type: "token", content: dsmlChunk.visibleText });
+            emitToken(dsmlChunk.visibleText);
           }
         }
         if (c.usage_metadata) {
@@ -1115,12 +1159,12 @@ export async function streamFromLLM(
         if (finalDsmlChunk.visibleText) {
           finalContent += finalDsmlChunk.visibleText;
           fullContent += finalDsmlChunk.visibleText;
-          pushEvent(requestId, { type: "token", content: finalDsmlChunk.visibleText });
+          emitToken(finalDsmlChunk.visibleText);
         }
         finalContent = stripDsmlArtifacts(finalContent);
         if (!finalContent.trim()) {
           fullContent += LOOP_GUARD_FALLBACK_MESSAGE;
-          pushEvent(requestId, { type: "token", content: LOOP_GUARD_FALLBACK_MESSAGE });
+          emitToken(LOOP_GUARD_FALLBACK_MESSAGE);
         }
       }
     }
@@ -1132,6 +1176,8 @@ export async function streamFromLLM(
       status: interruptedByUser || isRunInterrupted(requestId) ? "interrupted" : "failed",
       stopReason: interruptedByUser || isRunInterrupted(requestId) ? "user_interrupt" : "runtime_error",
       attachments: assistantAttachments.length ? assistantAttachments : undefined,
+      toolCalls: persistentToolCalls.length ? persistentToolCalls : undefined,
+      messageBlocks: persistentMessageBlocks.length ? persistentMessageBlocks : undefined,
     });
   }
 
@@ -1148,6 +1194,8 @@ export async function streamFromLLM(
         : "completed",
     usage: { promptTokens, completionTokens },
     attachments: assistantAttachments.length ? assistantAttachments : undefined,
+    toolCalls: persistentToolCalls.length ? persistentToolCalls : undefined,
+    messageBlocks: persistentMessageBlocks.length ? persistentMessageBlocks : undefined,
     ...(interruptedByUser
       ? { stopReason: "user_interrupt" as const }
       : breakerInfo
@@ -1204,29 +1252,16 @@ export async function extractMemoryAfterChat(
     primaryConfig.apiKey || fallbackApiKey,
     primaryConfig.apiBase,
     async (prompt) => {
-      if (primaryConfig.providerId === "anthropic-compatible") {
-        const res = await callChatCompletion(primaryConfig, [
-          { role: "system", content: durableMemoryInstruction },
-          { role: "user", content: prompt },
-        ], { temperature: 0, maxTokens: 800 });
-        return res.content;
-      }
-
-      const llm = new ChatOpenAI({
-        apiKey: resolveProviderSdkApiKey(primaryConfig.apiKey || fallbackApiKey, {
-          providerId: primaryConfig.providerId,
-          providerName: settings.providerName,
-          apiBase: primaryConfig.apiBase,
-        }),
-        model: primaryConfig.model,
+      const llm = createLangChainChatModel(primaryConfig, primaryConfig.apiKey || fallbackApiKey, settings, {
         temperature: 0,
-        configuration: { baseURL: primaryConfig.apiBase },
+        maxTokens: 800,
+        streaming: false,
       });
       const res = await llm.invoke([
         new SystemMessage(durableMemoryInstruction),
         new HumanMessage(prompt),
       ]);
-      return typeof res.content === "string" ? res.content : "";
+      return messageContentToText(res.content);
     },
     {
       model: primaryConfig.model,

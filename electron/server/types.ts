@@ -1,5 +1,7 @@
 ﻿import type { AgentSettings, ChatMessage, ModelCapability, TurnCompletionStatus } from "../../src/shared/types";
 
+import type { MessageBlock, ToolCallTrace } from "../../src/shared/types";
+
 export type TurnStopReason =
   | "completed"
   | "user_interrupt"
@@ -19,6 +21,8 @@ export type StreamEvent =
       stopReason?: TurnStopReason;
       hasSnapshot?: boolean;
       attachments?: ChatAttachment[];
+      toolCalls?: ToolCallTrace[];
+      messageBlocks?: MessageBlock[];
       circuitBreaker?: {
         reason: string;
         detail: string;

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Alert, Button, Form, Input, Select, Space, Spin, Typography, message } from "antd";
+import { Alert, AutoComplete, Button, Form, Input, Select, Space, Spin, Typography, message } from "antd";
 import { ReloadOutlined, SettingOutlined } from "@ant-design/icons";
 import type { AgentSettings, DiscoveredModel, ModelProfile, ProviderId } from "../../shared/types";
 import { useTheme } from "../../theme";
@@ -48,7 +48,7 @@ function buildUi(lang: "zh" | "en") {
     apiKey: "API Key",
     apiKeyPlaceholder: lang === "zh" ? "填入 API Key，若本地模型无需可留空" : "Enter an API key, or leave empty for local providers that do not need one",
     model: lang === "zh" ? "模型" : "Model",
-    modelPlaceholder: lang === "zh" ? "先获取模型列表" : "Fetch models first",
+    modelPlaceholder: lang === "zh" ? "可手动输入模型名，或先获取模型列表" : "Enter a model name or fetch models first",
     refreshModels: lang === "zh" ? "获取模型" : "Fetch Models",
     fetchingModels: lang === "zh" ? "正在获取模型..." : "Loading models...",
     save: lang === "zh" ? "保存并开始聊天" : "Save And Start Chat",
@@ -61,7 +61,7 @@ function buildUi(lang: "zh" | "en") {
     saveFailed: lang === "zh" ? "保存模型失败" : "Failed to save model.",
     saveSuccess: lang === "zh" ? "模型已保存，现在可以开始聊天了。" : "Model saved. You can start chatting now.",
     noModels: lang === "zh" ? "没有获取到可用模型，请确认服务地址和凭证。" : "No models were returned. Check the service URL and credentials.",
-    modelRequired: lang === "zh" ? "请选择一个模型" : "Please select a model.",
+    modelRequired: lang === "zh" ? "请输入模型名" : "Please enter a model.",
     protocolRequired: lang === "zh" ? "请选择协议" : "Please select a protocol.",
   };
 }
@@ -111,6 +111,14 @@ export const ModelOnboarding: React.FC<Props> = ({ loading = false, settings, on
     value: model.id,
     label: model.ownedBy ? `${model.label} | ${model.ownedBy}` : model.label,
   }));
+
+  const applyDiscoveredModel = (modelId: string) => {
+    const model = discoveredModels.find((item) => item.id === modelId);
+    if (!model) {
+      return;
+    }
+    form.setFieldsValue({ model: model.id });
+  };
 
   useEffect(() => {
     if (form.isFieldsTouched(["providerId", "providerName", "apiBase", "apiKey", "model"])) {
@@ -186,17 +194,18 @@ export const ModelOnboarding: React.FC<Props> = ({ loading = false, settings, on
 
   const saveModel = async () => {
     const values = await form.validateFields();
-    const selectedModel = discoveredModels.find((model) => model.id === values.model);
+    const modelId = String(values.model ?? "").trim();
+    const selectedModel = discoveredModels.find((model) => model.id === modelId);
     setSaving(true);
     setInlineError("");
     try {
       await apiPost<ModelProfile>("/api/model-profiles", {
-        name: selectedModel?.label || values.model,
+        name: selectedModel?.label || modelId,
         providerId: normalizeProviderId(values.providerId),
         providerName: normalizeServiceProviderName(values.providerName, String(values.apiBase ?? ""), values.providerId),
         apiBase: String(values.apiBase ?? "").trim(),
         apiKey: String(values.apiKey ?? "").trim(),
-        model: values.model,
+        model: modelId,
         capabilities: selectedModel?.capabilities?.length ? selectedModel.capabilities : ["chat"],
         enabled: true,
         isPrimary: true,
@@ -341,10 +350,19 @@ export const ModelOnboarding: React.FC<Props> = ({ loading = false, settings, on
             rules={[{ required: true, message: ui.modelRequired }]}
             style={{ marginTop: 14, marginBottom: 20 }}
           >
-            <Select
-              showSearch
+            <AutoComplete
               options={modelOptions}
               placeholder={discovering ? ui.fetchingModels : ui.modelPlaceholder}
+              filterOption={(inputValue, option) =>
+                String(option?.value ?? "").toLowerCase().includes(inputValue.toLowerCase())
+                || String(option?.label ?? "").toLowerCase().includes(inputValue.toLowerCase())
+              }
+              onChange={(value) => {
+                form.setFieldsValue({ model: value });
+              }}
+              onSelect={(value) => {
+                applyDiscoveredModel(String(value));
+              }}
             />
           </Form.Item>
 

@@ -73,6 +73,10 @@ export function registerChatRoutes(app: Application, ctx: ServerContext) {
           createdAt: new Date().toISOString(),
           status: doneEvent.status,
           attachments: doneEvent.attachments ?? [],
+          meta: {
+            toolCalls: doneEvent.toolCalls,
+            messageBlocks: doneEvent.messageBlocks,
+          },
         });
         sessionRef.updatedAt = new Date().toISOString();
         void saveSessionsToDisk();

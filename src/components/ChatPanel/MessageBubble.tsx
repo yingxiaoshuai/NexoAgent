@@ -220,8 +220,10 @@ const MessageBubbleComponent: React.FC<Props> = ({ message, streaming, toolCalls
   const { colors } = useTheme();
   const { t } = useI18n();
   const isUser = message.role === "user";
-  const toolMap = new Map((toolCalls ?? []).map((toolCall) => [toolCall.id, toolCall]));
-  const hasBlocks = !isUser && Boolean(blocks?.length);
+  const effectiveToolCalls = (toolCalls ?? message.meta?.toolCalls ?? []) as ToolCallEvent[];
+  const effectiveBlocks = blocks ?? message.meta?.messageBlocks;
+  const toolMap = new Map(effectiveToolCalls.map((toolCall) => [toolCall.id, toolCall]));
+  const hasBlocks = !isUser && Boolean(effectiveBlocks?.length);
   const apiBase = getApiBase();
   const safeContent = useMemo(() => (!isUser ? stripDsmlArtifacts(message.content) : message.content), [isUser, message.content]);
   const normalizedAttachments = useMemo(() => {
@@ -282,10 +284,10 @@ const MessageBubbleComponent: React.FC<Props> = ({ message, streaming, toolCalls
         >
           {isUser ? (
             <span style={{ whiteSpace: "pre-wrap" }}>{message.content}</span>
-          ) : hasBlocks && blocks ? (
+          ) : hasBlocks && effectiveBlocks ? (
             <>
-              {blocks.map((block, index) => {
-                const isLast = index === blocks.length - 1;
+              {effectiveBlocks.map((block, index) => {
+                const isLast = index === effectiveBlocks.length - 1;
                 if (block.type === "text") {
                   return (
                     <MarkdownText
@@ -299,7 +301,7 @@ const MessageBubbleComponent: React.FC<Props> = ({ message, streaming, toolCalls
                 const call = toolMap.get(block.id);
                 return call ? <ToolCallItem key={block.id} call={call} /> : null;
               })}
-              {streaming && blocks.length > 0 && blocks[blocks.length - 1].type === "tool" ? (
+              {streaming && effectiveBlocks.length > 0 && effectiveBlocks[effectiveBlocks.length - 1].type === "tool" ? (
                 <span style={{ color: "#38bdf8", animation: "blink 1s step-end infinite" }}>{STREAM_CURSOR}</span>
               ) : null}
             </>
